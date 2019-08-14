@@ -2,7 +2,7 @@
  * Copyright (C) 2009 Trend Micro Inc.
  * All right reserved.
  *
- * This program is a free software; you can redistribute it
+ * This program is free software; you can redistribute it
  * and/or modify it under the terms of the GNU General Public
  * License (version 2) as published by the FSF - Free Software
  * Foundation
@@ -310,8 +310,11 @@ static int read_sys_dir(const char *dir_name, int do_read, int depth)
                 _sys_errors++;
             }
 #else
-            notify_rk(ALERT_ROOTKIT_FOUND, op_msg);
-            _sys_errors++;
+            if (!check_ignore(dir_name)) {
+                notify_rk(ALERT_ROOTKIT_FOUND, op_msg);
+                _sys_errors++;
+            }
+
 #endif
         }
 #endif /* WIN32 */

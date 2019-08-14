@@ -2,7 +2,7 @@
 # Checks for SSH hardening
 # Copyright (C) 2015-2019, Wazuh Inc.
 #
-# This program is a free software; you can redistribute it
+# This program is free software; you can redistribute it
 # and/or modify it under the terms of the GNU General Public
 # License (version 2) as published by the FSF - Free Software
 # Foundation
@@ -36,7 +36,7 @@ checks:
     - pci_dss: "2.2.4"
    condition: any
    rules:
-     - 'f:$sshd_file -> !r:^# && r:Port\.+22;'
+     - 'f:$sshd_file -> IN !r:^# && r:Port\.+22;'
  - id: 1501
    title: "SSH Hardening - 2: Protocol 1"
    description: "The SSH protocol should not be 1."
@@ -46,7 +46,7 @@ checks:
     - pci_dss: "2.2.4"
    condition: any
    rules:
-     - 'f:$sshd_file -> !r:^# && r:Protocol\.+1;'
+     - 'f:$sshd_file -> IN !r:^# && r:Protocol\.+1;'
  - id: 1502
    title: "SSH Hardening - 3: Root can log in"
    description: "The option PermitRootLogin should be set to no."

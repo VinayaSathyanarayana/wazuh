@@ -2,7 +2,7 @@
  * Copyright (C) 2009 Trend Micro Inc.
  * All right reserved.
  *
- * This program is a free software; you can redistribute it
+ * This program is free software; you can redistribute it
  * and/or modify it under the terms of the GNU General Public
  * License (version 2) as published by the FSF - Free Software
  * Foundation
@@ -171,13 +171,13 @@ int rootcheck_init(int test_config)
     }
 
 #ifndef WIN32
-    if(rootcheck.checks.rc_unixaudit) {
+    if(rootcheck.checks.rc_unixaudit && !test_config) {
         mwarn("The check_unixaudit option is deprecated in favor of the SCA module.");
     }
 #endif
 
 #ifdef WIN32
-    if(rootcheck.checks.rc_winaudit) {
+    if(rootcheck.checks.rc_winaudit && !test_config) {
         mwarn("The check_winaudit option is deprecated in favor of the SCA module.");
     }
 #endif

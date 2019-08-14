@@ -2,7 +2,7 @@
  * Copyright (C) 2010 Trend Micro Inc.
  * All right reserved.
  *
- * This program is a free software; you can redistribute it
+ * This program is free software; you can redistribute it
  * and/or modify it under the terms of the GNU General Public
  * License (version 2) as published by the FSF - Free Software
  * Foundation
@@ -45,6 +45,7 @@ int send_syscheck_msg(const char *msg)
         /* Try to send it again */
         SendMSG(syscheck.queue, msg, SYSCHECK, SYSCHECK_MQ);
     }
+    mdebug1(FIM_CHECKSUM_MSG, msg);
     return (0);
 }
 
@@ -333,7 +334,7 @@ void start_daemon()
 }
 
 /* Read file information and return a pointer to the checksum */
-int c_read_file(const char *file_name, const char *linked_file, const char *oldsum, char *newsum, whodata_evt * evt)
+int c_read_file(const char *file_name, const char *linked_file, const char *oldsum, char *newsum, int dir_position, whodata_evt *evt)
 {
     int size = 0, perm = 0, owner = 0, group = 0, md5sum = 0, sha1sum = 0, sha256sum = 0, mtime = 0, inode = 0;
     struct stat statbuf;
@@ -361,22 +362,20 @@ int c_read_file(const char *file_name, const char *linked_file, const char *olds
 #ifdef WIN32
     if (stat(file_name, &statbuf) < 0)
 #else
-    struct stat statbuf_lnk;
-
     if (lstat(file_name, &statbuf) < 0)
 #endif
     {
-        char alert_msg[OS_SIZE_6144 + 1];
+        char alert_msg[OS_SIZE_6144 + OS_SIZE_2048];
         char wd_sum[OS_SIZE_6144 + 1];
-        int pos;
 
 #ifdef WIN_WHODATA
         // If this flag is enable, the remove event will be notified at another point
         if (evt && evt->ignore_remove_event) {
             mdebug2(FIM_WHODATA_FILENOEXIST, file_name);
-            return 0;
+            return -1;
         }
 #endif
+
         alert_msg[sizeof(alert_msg) - 1] = '\0';
 
         // Extract the whodata sum here to not include it in the hash table
@@ -384,12 +383,9 @@ int c_read_file(const char *file_name, const char *linked_file, const char *olds
             merror(FIM_ERROR_WHODATA_SUM_MAX, file_name);
         }
 
-        /* Find tag position for the evaluated file name */
-        if (pos = find_dir_pos(file_name, 1, 0, 0), pos >= 0) {
-            //Alert for deleted file
-            snprintf(alert_msg, sizeof(alert_msg), "-1!%s:%s:%s: %s", wd_sum, syscheck.tag[pos] ? syscheck.tag[pos] : "", linked_file ? linked_file : "", file_name);
-            send_syscheck_msg(alert_msg);
-        }
+        //Alert for deleted file
+        snprintf(alert_msg, sizeof(alert_msg), "-1!%s:%s:%s: %s", wd_sum, syscheck.tag[dir_position] ? syscheck.tag[dir_position] : "", linked_file ? linked_file : "", file_name);
+        send_syscheck_msg(alert_msg);
 
 #ifndef WIN32
         if(evt && evt->inode) {
@@ -499,31 +495,16 @@ int c_read_file(const char *file_name, const char *linked_file, const char *olds
 
     /* Generate new checksum */
     newsum[0] = '\0';
-    newsum[OS_MAXSTR] = '\0';
-    if (S_ISREG(statbuf.st_mode))
-    {
+    if (S_ISREG(statbuf.st_mode)) {
         if (sha1sum || md5sum || sha256sum) {
             /* Generate checksums of the file */
             if (OS_MD5_SHA1_SHA256_File(file_name, syscheck.prefilter_cmd, mf_sum, sf_sum, sf256_sum, OS_BINARY, syscheck.file_max_size) < 0) {
-                return 0;
+                return -1;
             }
         }
     }
 
 #ifndef WIN32
-    /* If it is a link, check if the actual file is valid */
-    else if (S_ISLNK(statbuf.st_mode)) {
-        if (stat(file_name, &statbuf_lnk) == 0) {
-            if (S_ISREG(statbuf_lnk.st_mode)) {
-                if (sha1sum || md5sum || sha256sum) {
-                    /* Generate checksums of the file */
-                    if (OS_MD5_SHA1_SHA256_File(file_name, syscheck.prefilter_cmd, mf_sum, sf_sum, sf256_sum, OS_BINARY, syscheck.file_max_size) < 0) {
-                        return 0;
-                    }
-                }
-            }
-        }
-    }
 
     if (size == 0){
         *str_size = '\0';
@@ -534,31 +515,19 @@ int c_read_file(const char *file_name, const char *linked_file, const char *olds
     if (perm == 0){
         *str_perm = '\0';
     } else {
-        if (S_ISLNK(statbuf.st_mode)) {
-            sprintf(str_perm,"%ld",(long)statbuf_lnk.st_mode);
-        } else {
-            sprintf(str_perm, "%ld", (long)statbuf.st_mode);
-        }
+        sprintf(str_perm, "%ld", (long)statbuf.st_mode);
     }
 
     if (owner == 0){
         *str_owner = '\0';
     } else {
-        if (S_ISLNK(statbuf.st_mode)) {
-            sprintf(str_owner,"%ld",(long)statbuf_lnk.st_uid);
-        } else {
-            sprintf(str_owner, "%ld", (long)statbuf.st_uid);
-        }
+        sprintf(str_owner, "%ld", (long)statbuf.st_uid);
     }
 
     if (group == 0){
         *str_group = '\0';
     } else {
-        if (S_ISLNK(statbuf.st_mode)) {
-            sprintf(str_group,"%ld",(long)statbuf_lnk.st_gid);
-        } else {
-            sprintf(str_group, "%ld", (long)statbuf.st_gid);
-        }
+        sprintf(str_group, "%ld", (long)statbuf.st_gid);
     }
 
     if (mtime == 0){
@@ -573,17 +542,17 @@ int c_read_file(const char *file_name, const char *linked_file, const char *olds
         sprintf(str_inode, "%ld", (long)statbuf.st_ino);
     }
 
-    snprintf(newsum, OS_MAXSTR, "%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%u",
+    snprintf(newsum, OS_SIZE_4096, "%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%u",
         str_size,
         str_perm,
         str_owner,
         str_group,
         md5sum   == 0 ? "" : mf_sum,
         sha1sum  == 0 ? "" : sf_sum,
-        owner == 0 ? "" : get_user(file_name, S_ISLNK(statbuf.st_mode) ? statbuf_lnk.st_uid : statbuf.st_uid, NULL),
-        group == 0 ? "" : get_group(S_ISLNK(statbuf.st_mode) ? statbuf_lnk.st_gid : statbuf.st_gid),
+        owner == 0 ? "" : get_user(file_name, statbuf.st_uid, NULL),
+        group == 0 ? "" : get_group(statbuf.st_gid),
         str_mtime,
-        str_inode,
+        inode == 0 ? "" : str_inode,
         sha256sum  == 0 ? "" : sf256_sum,
         0);
 #else
@@ -617,7 +586,7 @@ int c_read_file(const char *file_name, const char *linked_file, const char *olds
         sprintf(str_inode, "%ld", (long)statbuf.st_ino);
     }
 
-    snprintf(newsum, OS_MAXSTR, "%s:%s:%s::%s:%s:%s:%s:%s:%s:%s:%u",
+    snprintf(newsum, OS_SIZE_4096, "%s:%s:%s::%s:%s:%s:%s:%s:%s:%s:%u",
         str_size,
         (str_perm) ? str_perm : "",
         (owner == 0) && sid ? "" : sid,
@@ -626,7 +595,7 @@ int c_read_file(const char *file_name, const char *linked_file, const char *olds
         owner == 0 ? "" : user,
         group == 0 ? "" : get_group(statbuf.st_gid),
         str_mtime,
-        str_inode,
+        inode == 0 ? "" : str_inode,
         sha256sum  == 0 ? "" : sf256_sum,
         attributes);
 
@@ -684,11 +653,11 @@ static void *symlink_checker_thread(__attribute__((unused)) void * data) {
     char *conv_link;
 
     syscheck.sym_checker_interval = checker_sleep;
-    minfo(FIM_LINKCHECK_START, checker_sleep);
+    mdebug1(FIM_LINKCHECK_START, checker_sleep);
 
     while (1) {
         sleep(checker_sleep);
-        minfo(FIM_LINKCHECK_START, checker_sleep);
+        mdebug1(FIM_LINKCHECK_START, checker_sleep);
 
         for (i = 0; syscheck.dir[i]; i++) {
             if (syscheck.converted_links[i]) {
@@ -719,7 +688,7 @@ static void *symlink_checker_thread(__attribute__((unused)) void * data) {
 
 static void update_link_monitoring(int pos, char *old_path, char *new_path) {
     w_rwlock_wrlock((pthread_rwlock_t *)&syscheck.fp->mutex);
-    free( syscheck.converted_links[pos]);
+    free(syscheck.converted_links[pos]);
     os_strdup(new_path, syscheck.converted_links[pos]);
     w_rwlock_unlock((pthread_rwlock_t *)&syscheck.fp->mutex);
 

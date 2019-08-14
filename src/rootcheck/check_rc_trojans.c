@@ -2,7 +2,7 @@
  * Copyright (C) 2009 Trend Micro Inc.
  * All right reserved.
  *
- * This program is a free software; you can redistribute it
+ * This program is free software; you can redistribute it
  * and/or modify it under the terms of the GNU General Public
  * License (version 2) as published by the FSF - Free Software
  * Foundation
@@ -89,10 +89,10 @@ void check_rc_trojans(const char *basedir, FILE *fp)
 
             /* Check if entry is found */
             if (is_file(file_path) && os_string(file_path, string_to_look)) {
-                char op_msg[OS_SIZE_1024 + 1];
+                char op_msg[OS_SIZE_2048];
                 _errors = 1;
 
-                snprintf(op_msg, OS_SIZE_1024, "Trojaned version of file "
+                snprintf(op_msg, OS_SIZE_2048, "Trojaned version of file "
                          "'%s' detected. Signature used: '%s' (%s).",
                          file_path,
                          string_to_look,

@@ -3,7 +3,7 @@
  * Copyright (C) 2015-2019, Wazuh Inc.
  * June 06, 2016.
  *
- * This program is a free software; you can redistribute it
+ * This program is free software; you can redistribute it
  * and/or modify it under the terms of the GNU General Public
  * License (version 2) as published by the FSF - Free Software
  * Foundation.
@@ -40,6 +40,8 @@
 #define WDB_NETADDR_IPV4 0
 
 #define WDB_MULTI_GROUP_DELIM '-'
+
+#define WDB_RESPONSE_BEGIN_SIZE 16
 
 #define WDB_DATABASE_LOGTAG ARGV0 ":wdb_agent"
 
@@ -123,7 +125,6 @@ typedef struct wdb_t {
     time_t last;
     pthread_mutex_t mutex;
     struct wdb_t * next;
-    int remove;
 } wdb_t;
 
 typedef struct wdb_config {
@@ -140,7 +141,6 @@ extern char *schema_global_sql;
 extern char *schema_agents_sql;
 extern char *schema_upgrade_v1_sql;
 extern char *schema_upgrade_v2_sql;
-extern char *schema_upgrade_v3_sql;
 
 extern wdb_config config;
 extern pthread_mutex_t pool_mutex;
@@ -210,13 +210,13 @@ int wdb_update_pm(sqlite3 *db, const rk_event_t *event);
 int wdb_sca_find(wdb_t * wdb, int pm_id, char * output);
 
 /* Update a configuration assessment entry. Returns ID on success or -1 on error (new) */
-int wdb_sca_update(wdb_t * wdb, char * result, int pm_id,int scan_id);
+int wdb_sca_update(wdb_t * wdb, char * result, int id,int scan_id, char * status, char * reason);
 
 /* Insert configuration assessment entry. Returns ID on success or -1 on error (new) */
-int wdb_sca_save(wdb_t * wdb, int id,int scan_id,char * title,char *description,char *rationale,char *remediation, char * file,char * directory,char * process,char * registry,char * reference,char * result,char * policy_id,char * command);
+int wdb_sca_save(wdb_t * wdb, int id,int scan_id,char * title,char *description,char *rationale,char *remediation, char * file,char * directory,char * process,char * registry,char * reference,char * result,char * policy_id,char * command,char *status,char *reason);
 
 /* Insert scan info configuration assessment entry. Returns ID on success or -1 on error (new) */
-int wdb_sca_scan_info_save(wdb_t * wdb, int start_scan, int end_scan, int scan_id,char * policy_id,int pass,int fail,int score,char * hash);
+int wdb_sca_scan_info_save(wdb_t * wdb, int start_scan, int end_scan, int scan_id,char * policy_id,int pass,int fail,int invalid, int total_checks,int score,char * hash);
 
 /* Update scan info configuration assessment entry. Returns number of affected rows or -1 on error.  */
 int wdb_sca_scan_info_update(wdb_t * wdb, char * module, int end_scan);
@@ -240,7 +240,7 @@ int wdb_sca_check_update_scan_id(wdb_t * wdb, int scan_id_old, int scan_id_new,c
 int wdb_sca_scan_find(wdb_t * wdb, char *policy_id, char * output);
 
 /* Update scan info configuration assessment entry. Returns number of affected rows or -1 on error.  */
-int wdb_sca_scan_info_update_start(wdb_t * wdb, char * policy_id, int start_scan,int end_scan,int scan_id,int pass,int fail,int score,char * hash);
+int wdb_sca_scan_info_update_start(wdb_t * wdb, char * policy_id, int start_scan,int end_scan,int scan_id,int pass,int fail,int invalid,int total_checks,int score,char * hash);
 
 /* Look for a scan policy entry in Wazuh DB. Returns 1 if found, 0 if not, or -1 on error. (new) */
 int wdb_sca_policy_find(wdb_t * wdb, char *id, char * output);
@@ -497,14 +497,14 @@ void wdb_commit_old();
 
 void wdb_close_old();
 
-void wdb_remove_database(wdb_t *wdb);
+int wdb_remove_database(const char * agent_id);
 
 cJSON * wdb_exec(sqlite3 * db, const char * sql);
 
 // Execute SQL script into an database
 int wdb_sql_exec(wdb_t *wdb, const char *sql_exec);
 
-int wdb_close(wdb_t * wdb);
+int wdb_close(wdb_t * wdb, bool commit);
 
 void wdb_leave(wdb_t * wdb);
 
