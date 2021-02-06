@@ -1,9 +1,9 @@
 /*
  * Wazuh Module Manager
- * Copyright (C) 2015-2019, Wazuh Inc.
+ * Copyright (C) 2015-2020, Wazuh Inc.
  * April 22, 2016.
  *
- * This program is a free software; you can redistribute it
+ * This program is free software; you can redistribute it
  * and/or modify it under the terms of the GNU General Public
  * License (version 2) as published by the FSF - Free Software
  * Foundation.
@@ -17,7 +17,6 @@ static void wm_cleanup();               // Cleanup function, called on exiting.
 static void wm_handler(int signum);     // Action on signal.
 
 static int flag_foreground = 0;         // Running in foreground.
-int wm_debug_level;
 
 // Main function
 
@@ -27,8 +26,6 @@ int main(int argc, char **argv)
     int wm_debug = 0;
     int test_config = 0;
     wmodule *cur_module;
-    gid_t gid;
-    const char *group = GROUPGLOBAL;
     wm_debug_level = getDefine_Int("wazuh_modules", "debug", 0, 2);
 
     /* Set the name */
@@ -69,17 +66,6 @@ int main(int argc, char **argv)
         }
     }
 
-    /* Check if the group given is valid */
-    gid = Privsep_GetGroup(group);
-    if (gid == (gid_t) - 1) {
-        merror_exit(USER_ERROR, "", group);
-    }
-
-    /* Privilege separation */
-    if (Privsep_SetGroup(gid) < 0) {
-        merror_exit(SETGID_ERROR, group, errno, strerror(errno));
-    }
-
     // Setup daemon
 
     wm_setup();
@@ -87,7 +73,7 @@ int main(int argc, char **argv)
     if (test_config)
         exit(EXIT_SUCCESS);
 
-    minfo("Process started.");
+    minfo(STARTUP_MSG, (int)getpid());
 
     // Run modules
 
@@ -149,7 +135,7 @@ void wm_setup()
     // Set group
 
     if (gid = Privsep_GetGroup(GROUPGLOBAL), gid == (gid_t) -1) {
-        merror_exit(USER_ERROR, "", GROUPGLOBAL);
+        merror_exit(USER_ERROR, "", GROUPGLOBAL, strerror(errno), errno);
     }
 
     if (Privsep_SetGroup(gid) < 0) {
@@ -192,13 +178,14 @@ void wm_setup()
 
 void wm_cleanup()
 {
-    // Delete PID file
-
-    if (DeletePID(ARGV0) < 0)
-        merror("Couldn't delete PID file.");
-
     // Kill active child processes
     wm_kill_children();
+
+    // Delete PID file
+
+    if (DeletePID(ARGV0) < 0) {
+        merror("Couldn't delete PID file.");
+    }
 }
 
 // Action on signal

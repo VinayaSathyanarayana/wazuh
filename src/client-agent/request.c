@@ -1,8 +1,8 @@
 /* Remote request manager
- * Copyright (C) 2015-2019, Wazuh Inc.
+ * Copyright (C) 2015-2020, Wazuh Inc.
  * June 2, 2017.
  *
- * This program is a free software; you can redistribute it
+ * This program is free software; you can redistribute it
  * and/or modify it under the terms of the GNU General Public
  * License (version 2) as published by the FSF - Free Software
  * Foundation.
@@ -20,6 +20,7 @@
 #include "../syscheckd/syscheck.h"
 #include "../wazuh_modules/wmodules.h"
 #include "../logcollector/logcollector.h"
+#include "../wazuh_modules/agent_upgrade/agent/wm_agent_upgrade_agent.h"
 #endif
 
 static OSHash * req_table;
@@ -53,9 +54,9 @@ void req_init() {
     rto_msec = getDefine_Int("remoted", "request_rto_msec", 0, 999);
     max_attempts = getDefine_Int("remoted", "max_attempts", 1, 16);
 
-    pthread_mutex_init(&mutex_table, NULL);
-    pthread_mutex_init(&mutex_pool, NULL);
-    pthread_cond_init(&pool_available, NULL);
+    w_mutex_init(&mutex_table, NULL);
+    w_mutex_init(&mutex_pool, NULL);
+    w_cond_init(&pool_available, NULL);
 
     // Create hash table and request pool
 
@@ -148,7 +149,7 @@ int req_push(char * buffer, size_t length) {
 
         if (strcmp(target, "agent")) {
             char sockname[PATH_MAX];
-            snprintf(sockname, PATH_MAX, "/queue/ossec/%s", target);
+            snprintf(sockname, PATH_MAX, DEFAULTDIR "/queue/ossec/%s", target);
 
             if (sock = OS_ConnectUnixDomain(sockname, SOCK_STREAM, OS_MAXSTR), sock < 0) {
                 switch (errno) {
@@ -172,7 +173,7 @@ int req_push(char * buffer, size_t length) {
 
         // Send ACK, only in UDP mode
 
-        if (agt->server[agt->rip_id].protocol == UDP_PROTO) {
+        if (agt->server[agt->rip_id].protocol == IPPROTO_UDP) {
             mdebug2("req_push(): Sending ack (%s).", counter);
             // Example: #!-req 16 ack
             snprintf(response, REQ_RESPONSE_LENGTH, CONTROL_HEADER HC_REQUEST "%s ack", counter);
@@ -259,11 +260,13 @@ void * req_receiver(__attribute__((unused)) void * arg) {
         } else if (strncmp(node->target, "logcollector", 12) == 0) {
             length = lccom_dispatch(node->buffer, &buffer);
         } else if (strncmp(node->target, "com", 3) == 0) {
-            length = wcom_dispatch(node->buffer, node->length, &buffer);
+            length = wcom_dispatch(node->buffer, &buffer);
         } else if (strncmp(node->target, "syscheck", 8) == 0) {
             length = syscom_dispatch(node->buffer, &buffer);
         } else if (strncmp(node->target, "wmodules", 8) == 0) {
             length = wmcom_dispatch(node->buffer, &buffer);
+        } else if (strncmp(node->target, "upgrade", 7) == 0) {
+            length = wm_agent_upgrade_process_command(node->buffer, &buffer);
         } else {
             os_strdup("err Could not get requested section", buffer);
             length = strlen(buffer);
@@ -343,7 +346,7 @@ void * req_receiver(__attribute__((unused)) void * arg) {
 
             // Wait for ACK, only in UDP mode
 
-            if (agt->server[agt->rip_id].protocol == UDP_PROTO) {
+            if (agt->server[agt->rip_id].protocol == IPPROTO_UDP) {
                 gettimeofday(&now, NULL);
                 nsec = now.tv_usec * 1000 + rto_msec * 1000000;
                 timeout.tv_sec = now.tv_sec + rto_sec + nsec / 1000000000;

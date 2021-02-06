@@ -1,9 +1,9 @@
 /*
  * Wazuh Module Manager
- * Copyright (C) 2015-2019, Wazuh Inc.
+ * Copyright (C) 2015-2020, Wazuh Inc.
  * April 25, 2016.
  *
- * This program is a free software; you can redistribute it
+ * This program is free software; you can redistribute it
  * and/or modify it under the terms of the GNU General Public
  * License (version 2) as published by the FSF - Free Software
  * Foundation.
@@ -35,7 +35,7 @@ typedef struct ThreadInfo {
 // Initialize children pool
 
 void wm_children_pool_init() {
-    pthread_mutex_init(&wm_children_mutex, NULL);
+    w_mutex_init(&wm_children_mutex, NULL);
 }
 
 #ifdef WIN32
@@ -125,13 +125,7 @@ int wm_exec(char *command, char **output, int *status, int secs, const char * ad
 
         // Create reading thread
 
-        hThread = CreateThread(NULL, 0, Reader, &tinfo, 0, NULL);
-
-        if (!hThread) {
-            winerror = GetLastError();
-            merror("at wm_exec(): CreateThread(%d): %s", winerror, win_strerror(winerror));
-            return -1;
-        }
+        hThread = w_create_thread(NULL, 0, Reader, &tinfo, 0, NULL);
     }
 
     switch (WaitForSingleObject(pinfo.hProcess, secs ? (unsigned)(secs * 1000) : INFINITE)) {
@@ -164,10 +158,11 @@ int wm_exec(char *command, char **output, int *status, int secs, const char * ad
             WaitForSingleObject(hThread, INFINITE);
         }
 
-        if (retval >= 0)
+        if (retval >= 0) {
             *output = tinfo.output ? tinfo.output : strdup("");
-        else
+        } else {
             free(tinfo.output);
+        }
 
         CloseHandle(hThread);
         CloseHandle(tinfo.pipe);
@@ -295,9 +290,12 @@ int wm_exec(char *command, char **output, int *exitcode, int secs, const char * 
 
     // Create pipe for child's stdout
 
-    if (output && pipe(pipe_fd) < 0) {
-        merror("At wm_exec(): pipe(): %s", strerror(errno));
-        return -1;
+    if (output) {
+        if (pipe(pipe_fd) < 0){
+            merror("At wm_exec(): pipe(): %s", strerror(errno));
+            return -1;
+        }
+        w_descriptor_cloexec(pipe_fd[0]);
     }
 
     // Fork
@@ -332,14 +330,12 @@ int wm_exec(char *command, char **output, int *exitcode, int secs, const char * 
                 snprintf(new_path, OS_SIZE_6144 - 1, "%s", add_path);
             } else if (strlen(env_path) >= OS_SIZE_6144) {
                 merror("at wm_exec(): PATH environment variable too large.");
-                retval = -1;
             } else {
                 snprintf(new_path, OS_SIZE_6144 - 1, "%s:%s", add_path, env_path);
             }
 
             if (setenv("PATH", new_path, 1) < 0) {
                 merror("at wm_exec(): Unable to set new 'PATH' environment variable (%s).", strerror(errno));
-                retval = -1;
             }
 
             char *new_env = getenv("PATH");
@@ -347,7 +343,7 @@ int wm_exec(char *command, char **output, int *exitcode, int secs, const char * 
             free(new_path);
         }
 
-        argv = wm_strtok(command);
+        argv = w_strtok(command);
 
         int fd = open("/dev/null", O_RDWR, 0);
 
@@ -427,8 +423,8 @@ int wm_exec(char *command, char **output, int *exitcode, int secs, const char * 
 
             // Cleanup
 
-            pthread_mutex_destroy(&tinfo.mutex);
-            pthread_cond_destroy(&tinfo.finished);
+            w_mutex_destroy(&tinfo.mutex);
+            w_cond_destroy(&tinfo.finished);
 
             // Wait for child process
 
@@ -450,7 +446,6 @@ int wm_exec(char *command, char **output, int *exitcode, int secs, const char * 
 
         } else if (secs){
             // Kill and timeout
-            retval = 0;
             sleep(1);
             secs--;
             do {
@@ -485,7 +480,17 @@ int wm_exec(char *command, char **output, int *exitcode, int secs, const char * 
                     }
 
                 } else { // Command finished
-                    retval = 0;
+                    if (WEXITSTATUS(status) == EXECVE_ERROR) {
+                        mdebug1("Invalid command: '%s': (%d) %s", command, errno, strerror(errno));
+                        retval = -1;
+                    } else {
+                        retval = 0;
+                    }
+
+                    if (exitcode) {
+                        *exitcode = WEXITSTATUS(status);
+                    }
+
                     break;
                 }
             } while(secs >= 0);
@@ -513,7 +518,24 @@ int wm_exec(char *command, char **output, int *exitcode, int secs, const char * 
                 }
             }
         } else {
-            retval = 0;
+            switch (waitpid(pid, &status, 0)) {
+            case -1:
+                merror("waitpid()");
+                retval = -1;
+                break;
+
+            default:
+                if (WEXITSTATUS(status) == EXECVE_ERROR) {
+                    mdebug1("Invalid command: '%s': (%d) %s", command, errno, strerror(errno));
+                    retval = -1;
+                } else {
+                    retval = 0;
+                }
+
+                if (exitcode) {
+                    *exitcode = WEXITSTATUS(status);
+                }
+            }
         }
 
         wm_remove_sid(pid);
@@ -557,7 +579,7 @@ void* reader(void *args) {
         tinfo->output[length] = '\0';
 
     w_mutex_lock(&tinfo->mutex);
-    pthread_cond_signal(&tinfo->finished);
+    w_cond_signal(&tinfo->finished);
     w_mutex_unlock(&tinfo->mutex);
 
     close(tinfo->pipe);

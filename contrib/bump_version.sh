@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Bump source version
-# Copyright (C) 2015-2019, Wazuh Inc.
+# Copyright (C) 2015-2020, Wazuh Inc.
 # May 2, 2017
 
 # Syntax:
@@ -59,11 +59,17 @@ cd $(dirname $0)
 VERSION_FILE="../src/VERSION"
 REVISION_FILE="../src/REVISION"
 DEFS_FILE="../src/headers/defs.h"
-NSIS_FILE="../src/win32/ossec-installer.nsi"
+WAZUH_SERVER="../src/init/wazuh-server.sh"
+WAZUH_AGENT="../src/init/wazuh-client.sh"
+WAZUH_LOCAL="../src/init/wazuh-local.sh"
+NSIS_FILE="../src/win32/wazuh-installer.nsi"
 MSI_FILE="../src/win32/wazuh-installer.wxs"
 FW_SETUP="../framework/setup.py"
 FW_INIT="../framework/wazuh/__init__.py"
-CLUSTER_INIT="../framework/wazuh/cluster/__init__.py"
+CLUSTER_INIT="../framework/wazuh/core/cluster/__init__.py"
+API_SETUP="../api/setup.py"
+API_SPEC="../api/api/spec/spec.yaml"
+VERSION_DOCU="../src/Doxyfile"
 
 if [ -n "$version" ]
 then
@@ -84,7 +90,13 @@ then
 
     sed -E -i'' -e "s/^(#define __ossec_version +)\"v.*\"/\1\"$version\"/" $DEFS_FILE
 
-    # File ossec-installer.nsi
+    # wazuh-control
+
+    sed -E -i'' -e "s/^(VERSION=+)\"v.*\"/\1\"$version\"/" $WAZUH_SERVER
+    sed -E -i'' -e "s/^(VERSION=+)\"v.*\"/\1\"$version\"/" $WAZUH_AGENT
+    sed -E -i'' -e "s/^(VERSION=+)\"v.*\"/\1\"$version\"/" $WAZUH_LOCAL
+
+    # File wazuh-installer.nsi
 
     egrep "^\!define VERSION \".+\"" $NSIS_FILE > /dev/null
 
@@ -116,16 +128,32 @@ then
     # Cluster
 
     sed -E -i'' -e "s/__version__ = '.+'/__version__ = '${version:1}'/g" $CLUSTER_INIT
+
+    # API
+
+    sed -E -i'' -e "s/version='.+',/version='${version:1}',/g" $API_SETUP
+    sed -E -i'' -e "s/version: '.+'/version: '${version:1}'/g" $API_SPEC
+
+    # Documentation config file
+
+    sed -E -i'' -e "s/PROJECT_NUMBER         = \".+\"/PROJECT_NUMBER         = \"$version\"/g" $VERSION_DOCU
 fi
 
 if [ -n "$revision" ]
 then
+    CURRENT_VERSION=$(cat $VERSION_FILE)
 
     # File REVISION
 
     echo $revision > $REVISION_FILE
 
-    # File ossec-installer.nsi
+    # wazuh-control
+
+    sed -E -i'' -e "s/^(REVISION=+)\".*\"/\1\"$revision\"/" $WAZUH_SERVER
+    sed -E -i'' -e "s/^(REVISION=+)\".*\"/\1\"$revision\"/" $WAZUH_AGENT
+    sed -E -i'' -e "s/^(REVISION=+)\".*\"/\1\"$revision\"/" $WAZUH_LOCAL
+
+    # File wazuh-installer.nsi
 
     egrep "^\!define REVISION \".+\"" $NSIS_FILE > /dev/null
 
@@ -140,12 +168,20 @@ then
     # Cluster
 
     sed -E -i'' -e "s/__revision__ = '.+'/__revision__ = '$revision'/g" $CLUSTER_INIT
+
+    # API
+
+    sed -E -i'' -e "s/x-revision: .+'/x-revision: '$revision'/g" $API_SPEC
+
+    # Documentation config file
+
+    sed -E -i'' -e "s/PROJECT_NUMBER         = \".+\"/PROJECT_NUMBER         = \"$CURRENT_VERSION-$revision\"/g" $VERSION_DOCU
 fi
 
 if [ -n "$product" ]
 then
 
-    # File ossec-installer.nsi
+    # File wazuh-installer.nsi
 
     egrep "^VIProductVersion \".+\"" $NSIS_FILE > /dev/null
 

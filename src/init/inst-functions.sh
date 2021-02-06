@@ -1,10 +1,10 @@
 #!/bin/sh
 
 # Wazuh Installer Functions
-# Copyright (C) 2015-2019, Wazuh Inc.
+# Copyright (C) 2015-2021, Wazuh Inc.
 # November 18, 2016.
 #
-# This program is a free software; you can redistribute it
+# This program is free software; you can redistribute it
 # and/or modify it under the terms of the GNU General Public
 # License (version 2) as published by the FSF - Free Software
 # Foundation.
@@ -20,6 +20,7 @@ HEADER_TEMPLATE="./etc/templates/config/generic/header-comments.template"
 GLOBAL_TEMPLATE="./etc/templates/config/generic/global.template"
 GLOBAL_AR_TEMPLATE="./etc/templates/config/generic/global-ar.template"
 RULES_TEMPLATE="./etc/templates/config/generic/rules.template"
+RULE_TEST_TEMPLATE="./etc/templates/config/generic/rule_test.template"
 AR_COMMANDS_TEMPLATE="./etc/templates/config/generic/ar-commands.template"
 AR_DEFINITIONS_TEMPLATE="./etc/templates/config/generic/ar-definitions.template"
 ALERTS_TEMPLATE="./etc/templates/config/generic/alerts.template"
@@ -34,7 +35,7 @@ CLUSTER_TEMPLATE="./etc/templates/config/generic/cluster.template"
 CISCAT_TEMPLATE="./etc/templates/config/generic/wodle-ciscat.template"
 VULN_TEMPLATE="./etc/templates/config/generic/wodle-vulnerability-detector.manager.template"
 
-SECURITY_CONFIGURATION_ASSESSMENT_TEMPLATE="./etc/templates/config/generic/sca_generic.template"
+SECURITY_CONFIGURATION_ASSESSMENT_TEMPLATE="./etc/templates/config/generic/sca.template"
 
 ##########
 # WriteSyscheck()
@@ -75,16 +76,15 @@ WriteSyscheck()
 ##########
 DisableAuthd()
 {
-    echo "  <!-- Configuration for ossec-authd -->" >> $NEWCONFIG
+    echo "  <!-- Configuration for wazuh-authd -->" >> $NEWCONFIG
     echo "  <auth>" >> $NEWCONFIG
     echo "    <disabled>yes</disabled>" >> $NEWCONFIG
     echo "    <port>1515</port>" >> $NEWCONFIG
-    echo "    <use_source_ip>yes</use_source_ip>" >> $NEWCONFIG
+    echo "    <use_source_ip>no</use_source_ip>" >> $NEWCONFIG
     echo "    <force_insert>yes</force_insert>" >> $NEWCONFIG
     echo "    <force_time>0</force_time>" >> $NEWCONFIG
     echo "    <purge>yes</purge>" >> $NEWCONFIG
     echo "    <use_password>no</use_password>" >> $NEWCONFIG
-    echo "    <limit_maxagents>yes</limit_maxagents>" >> $NEWCONFIG
     echo "    <ciphers>HIGH:!ADH:!EXP:!MD5:!RC4:!3DES:!CAMELLIA:@STRENGTH</ciphers>" >> $NEWCONFIG
     echo "    <!-- <ssl_agent_ca></ssl_agent_ca> -->" >> $NEWCONFIG
     echo "    <ssl_verify_host>no</ssl_verify_host>" >> $NEWCONFIG
@@ -112,22 +112,6 @@ WriteRootcheck()
       echo "  <rootcheck>" >> $NEWCONFIG
       echo "    <disabled>yes</disabled>" >> $NEWCONFIG
       echo "  </rootcheck>" >> $NEWCONFIG
-      echo "" >> $NEWCONFIG
-    fi
-}
-
-##########
-# WriteOpenSCAP()
-##########
-WriteOpenSCAP()
-{
-    # Adding to the config file
-    if [ "X$OPENSCAP" = "Xyes" ]; then
-      OPENSCAP_TEMPLATE=$(GetTemplate "wodle-openscap.$1.template" ${DIST_NAME} ${DIST_VER} ${DIST_SUBVER})
-      if [ "$OPENSCAP_TEMPLATE" = "ERROR_NOT_FOUND" ]; then
-        OPENSCAP_TEMPLATE=$(GetTemplate "wodle-openscap.template" ${DIST_NAME} ${DIST_VER} ${DIST_SUBVER})
-      fi
-      cat ${OPENSCAP_TEMPLATE} >> $NEWCONFIG
       echo "" >> $NEWCONFIG
     fi
 }
@@ -184,34 +168,8 @@ WriteConfigurationAssessment()
     # Adding to the config file
     if [ "X$SECURITY_CONFIGURATION_ASSESSMENT" = "Xyes" ]; then
       SECURITY_CONFIGURATION_ASSESSMENT_TEMPLATE=$(GetTemplate "sca.template" ${DIST_NAME} ${DIST_VER} ${DIST_SUBVER})
-      if [ "$SECURITY_CONFIGURATION_ASSESSMENT_TEMPLATE" = "ERROR_NOT_FOUND" ]; then
-        SECURITY_CONFIGURATION_ASSESSMENT_TEMPLATE=$(GetTemplate "sca_generic.template" ${DIST_NAME} ${DIST_VER} ${DIST_SUBVER})
-      fi
       cat ${SECURITY_CONFIGURATION_ASSESSMENT_TEMPLATE} >> $NEWCONFIG
       echo "" >> $NEWCONFIG
-    fi
-}
-
-##########
-# InstallOpenSCAPFiles()
-##########
-InstallOpenSCAPFiles()
-{
-    cd ..
-    OPENSCAP_FILES_PATH=$(GetTemplate "openscap.files" ${DIST_NAME} ${DIST_VER} ${DIST_SUBVER})
-    cd ./src
-    if [ "$OPENSCAP_FILES_PATH" = "ERROR_NOT_FOUND" ]; then
-        echo "SCAP security policies not available for this OS version."
-    else
-        echo "Installing SCAP security policies..."
-        OPENSCAP_FILES=$(cat .$OPENSCAP_FILES_PATH)
-        for file in $OPENSCAP_FILES; do
-            if [ -f "../wodles/oscap/content/$file" ]; then
-                ${INSTALL} -v -m 0640 -o root -g ${OSSEC_GROUP} ../wodles/oscap/content/$file ${PREFIX}/wodles/oscap/content
-            else
-                echo "ERROR: SCAP security policy not found: ./wodles/oscap/content/$file"
-            fi
-        done
     fi
 }
 
@@ -222,22 +180,38 @@ InstallSecurityConfigurationAssessmentFiles()
 {
 
     cd ..
+
+    CONFIGURATION_ASSESSMENT_FILES_PATH=$(GetTemplate "sca.files" ${DIST_NAME} ${DIST_VER} ${DIST_SUBVER})
+
     if [ "X$1" = "Xmanager" ]; then
-        CONFIGURATION_ASSESSMENT_FILES_PATH=$(GetTemplate "sca.$1.files" ${DIST_NAME} ${DIST_VER} ${DIST_SUBVER})
-    else
-        CONFIGURATION_ASSESSMENT_FILES_PATH=$(GetTemplate "sca.files" ${DIST_NAME} ${DIST_VER} ${DIST_SUBVER})
+        CONFIGURATION_ASSESSMENT_MANAGER_FILES_PATH=$(GetTemplate "sca.$1.files" ${DIST_NAME} ${DIST_VER} ${DIST_SUBVER})
     fi
     cd ./src
     if [ "$CONFIGURATION_ASSESSMENT_FILES_PATH" = "ERROR_NOT_FOUND" ]; then
-        echo "SCA policies not available for this OS version ${DIST_NAME} ${DIST_VER} ${DIST_SUBVER}."
+        echo "SCA policies are not available for this OS version ${DIST_NAME} ${DIST_VER} ${DIST_SUBVER}."
     else
+        echo "Removing old SCA policies..."
+        rm -f ${PREFIX}/ruleset/sca/*
+
         echo "Installing SCA policies..."
         CONFIGURATION_ASSESSMENT_FILES=$(cat .$CONFIGURATION_ASSESSMENT_FILES_PATH)
-        for file in $CONFIGURATION_ASSESSMENT_FILES; do
-            if [ -f "../etc/sca/$file" ]; then
-                ${INSTALL} -v -m 0640 -o root -g ${OSSEC_GROUP} ../etc/sca/$file ${PREFIX}/ruleset/sca
+        for FILE in $CONFIGURATION_ASSESSMENT_FILES; do
+            if [ -f "../ruleset/sca/$FILE" ]; then
+                ${INSTALL} -m 0640 -o root -g ${OSSEC_GROUP} ../ruleset/sca/$FILE ${PREFIX}/ruleset/sca
             else
-                echo "ERROR: SCA policy not found: ./etc/sca/$file"
+                echo "ERROR: SCA policy not found: ../ruleset/sca/$FILE"
+            fi
+        done
+    fi
+
+    if [ "X$1" = "Xmanager" ]; then
+        echo "Installing additional SCA policies..."
+        CONFIGURATION_ASSESSMENT_FILES=$(cat .$CONFIGURATION_ASSESSMENT_MANAGER_FILES_PATH)
+        for FILE in $CONFIGURATION_ASSESSMENT_FILES; do
+            FILENAME=$(basename $FILE)
+            if [ -f "../ruleset/sca/$FILE" ] && [ ! -f "${PREFIX}/ruleset/sca/$FILENAME" ]; then
+                ${INSTALL} -m 0640 -o root -g ${OSSEC_GROUP} ../ruleset/sca/$FILE ${PREFIX}/ruleset/sca/
+                mv ${PREFIX}/ruleset/sca/$FILENAME ${PREFIX}/ruleset/sca/$FILENAME.disabled
             fi
         done
     fi
@@ -253,12 +227,12 @@ GenerateAuthCert()
         if [ ! -f "${INSTALLDIR}/etc/sslmanager.key" ] && [ ! -f "${INSTALLDIR}/etc/sslmanager.cert" ]; then
             if [ ! "X${USER_GENERATE_AUTHD_CERT}" = "Xn" ]; then
                 if type openssl >/dev/null 2>&1; then
-                    echo "Generating self-signed certificate for ossec-authd..."
-                    openssl req -x509 -batch -nodes -days 365 -newkey rsa:2048 -subj "/C=US/ST=California/CN=Wazuh/" -keyout ${INSTALLDIR}/etc/sslmanager.key -out ${INSTALLDIR}/etc/sslmanager.cert
+                    echo "Generating self-signed certificate for wazuh-authd..."
+                    openssl req -x509 -batch -nodes -days 365 -newkey rsa:2048 -subj "/C=US/ST=California/CN=Wazuh/" -keyout ${INSTALLDIR}/etc/sslmanager.key -out ${INSTALLDIR}/etc/sslmanager.cert 2>/dev/null
                     chmod 640 ${INSTALLDIR}/etc/sslmanager.key
                     chmod 640 ${INSTALLDIR}/etc/sslmanager.cert
                 else
-                    echo "ERROR: OpenSSL not found. Cannot generate certificate for ossec-authd."
+                    echo "ERROR: OpenSSL not found. Cannot generate certificate for wazuh-authd."
                 fi
             fi
         fi
@@ -334,19 +308,12 @@ SetHeaders()
 }
 
 ##########
-# Generate the ossec-init.conf
+# GenerateService() $1=template
 ##########
-GenerateInitConf()
+GenerateService()
 {
-    NEWINIT="./ossec-init.conf.temp"
-    echo "DIRECTORY=\"${INSTALLDIR}\"" > ${NEWINIT}
-    echo "NAME=\"${NAME}\"" >> ${NEWINIT}
-    echo "VERSION=\"${VERSION}\"" >> ${NEWINIT}
-    echo "REVISION=\"${REVISION}\"" >> ${NEWINIT}
-    echo "DATE=\"`date`\"" >> ${NEWINIT}
-    echo "TYPE=\"${INSTYPE}\"" >> ${NEWINIT}
-    cat "$NEWINIT"
-    rm "$NEWINIT"
+    SERVICE_TEMPLATE=./src/init/templates/${1}
+    sed "s|WAZUH_HOME_TMP|${INSTALLDIR}|g" ${SERVICE_TEMPLATE}
 }
 
 ##########
@@ -369,7 +336,7 @@ WriteAgent()
       echo "      <address>$HNAME</address>" >> $NEWCONFIG
     fi
     echo "      <port>1514</port>" >> $NEWCONFIG
-    echo "      <protocol>udp</protocol>" >> $NEWCONFIG
+    echo "      <protocol>tcp</protocol>" >> $NEWCONFIG
     echo "    </server>" >> $NEWCONFIG
     if [ "X${USER_AGENT_CONFIG_PROFILE}" != "X" ]; then
          PROFILE=${USER_AGENT_CONFIG_PROFILE}
@@ -402,9 +369,6 @@ WriteAgent()
 
     # Rootcheck
     WriteRootcheck "agent"
-
-    # OpenSCAP
-    WriteOpenSCAP "agent"
 
     # CIS-CAT configuration
     if [ "X$DIST_NAME" !=  "Xdarwin" ]; then
@@ -506,9 +470,6 @@ WriteManager()
     # Write rootcheck
     WriteRootcheck "manager"
 
-    # Write OpenSCAP
-    WriteOpenSCAP "manager"
-
     # CIS-CAT configuration
     if [ "X$DIST_NAME" !=  "Xdarwin" ]; then
         WriteCISCAT "manager"
@@ -582,6 +543,10 @@ WriteManager()
     cat ${RULES_TEMPLATE} >> $NEWCONFIG
     echo "" >> $NEWCONFIG
 
+    # Writting wazuh-logtest configuration
+    cat ${RULE_TEST_TEMPLATE} >> $NEWCONFIG
+    echo "" >> $NEWCONFIG
+
     # Writting auth configuration
     if [ "X${AUTHD}" = "Xyes" ]; then
         sed -e "s|\${INSTALLDIR}|$INSTALLDIR|g" "${AUTH_TEMPLATE}" >> $NEWCONFIG
@@ -631,9 +596,6 @@ WriteLocal()
 
     # Write rootcheck
     WriteRootcheck "manager"
-
-    # Write OpenSCAP
-    WriteOpenSCAP "manager"
 
     # CIS-CAT configuration
     if [ "X$DIST_NAME" !=  "Xdarwin" ]; then
@@ -702,6 +664,10 @@ WriteLocal()
     cat ${RULES_TEMPLATE} >> $NEWCONFIG
     echo "" >> $NEWCONFIG
 
+    # Writting wazuh-logtest configuration
+    cat ${RULE_TEST_TEMPLATE} >> $NEWCONFIG
+    echo "" >> $NEWCONFIG
+
     echo "</ossec_config>" >> $NEWCONFIG
 }
 
@@ -716,13 +682,13 @@ InstallCommon()
     INSTALL="install"
 
     if [ ${INSTYPE} = 'server' ]; then
-        OSSEC_CONTROL_SRC='./init/ossec-server.sh'
+        OSSEC_CONTROL_SRC='./init/wazuh-server.sh'
         OSSEC_CONF_SRC='../etc/ossec-server.conf'
     elif [ ${INSTYPE} = 'agent' ]; then
-        OSSEC_CONTROL_SRC='./init/ossec-client.sh'
+        OSSEC_CONTROL_SRC='./init/wazuh-client.sh'
         OSSEC_CONF_SRC='../etc/ossec-agent.conf'
     elif [ ${INSTYPE} = 'local' ]; then
-        OSSEC_CONTROL_SRC='./init/ossec-local.sh'
+        OSSEC_CONTROL_SRC='./init/wazuh-local.sh'
         OSSEC_CONF_SRC='../etc/ossec-local.conf'
     fi
 
@@ -770,18 +736,20 @@ InstallCommon()
         fi
     fi
 
-  ${INSTALL} -m 0750 -o root -g 0 ossec-logcollector ${PREFIX}/bin
-  ${INSTALL} -m 0750 -o root -g 0 ossec-syscheckd ${PREFIX}/bin
-  ${INSTALL} -m 0750 -o root -g 0 ossec-execd ${PREFIX}/bin
+  ${INSTALL} -m 0750 -o root -g 0 wazuh-logcollector ${PREFIX}/bin
+  ${INSTALL} -m 0750 -o root -g 0 wazuh-syscheckd ${PREFIX}/bin
+  ${INSTALL} -m 0750 -o root -g 0 wazuh-execd ${PREFIX}/bin
   ${INSTALL} -m 0750 -o root -g 0 manage_agents ${PREFIX}/bin
-  ${INSTALL} -m 0750 -o root -g 0 ../contrib/util.sh ${PREFIX}/bin/
-  ${INSTALL} -m 0750 -o root -g 0 ${OSSEC_CONTROL_SRC} ${PREFIX}/bin/ossec-control
+  ${INSTALL} -m 0750 -o root -g 0 ${OSSEC_CONTROL_SRC} ${PREFIX}/bin/wazuh-control
   ${INSTALL} -m 0750 -o root -g 0 wazuh-modulesd ${PREFIX}/bin/
 
   ${INSTALL} -d -m 0750 -o root -g ${OSSEC_GROUP} ${PREFIX}/queue
   ${INSTALL} -d -m 0770 -o ${OSSEC_USER} -g ${OSSEC_GROUP} ${PREFIX}/queue/alerts
   ${INSTALL} -d -m 0770 -o ${OSSEC_USER} -g ${OSSEC_GROUP} ${PREFIX}/queue/ossec
   ${INSTALL} -d -m 0750 -o ${OSSEC_USER} -g ${OSSEC_GROUP} ${PREFIX}/queue/diff
+  ${INSTALL} -d -m 0750 -o ${OSSEC_USER} -g ${OSSEC_GROUP} ${PREFIX}/queue/fim
+  ${INSTALL} -d -m 0750 -o ${OSSEC_USER} -g ${OSSEC_GROUP} ${PREFIX}/queue/fim/db
+  ${INSTALL} -d -m 0750 -o ${OSSEC_USER} -g ${OSSEC_GROUP} ${PREFIX}/queue/logcollector
 
   ${INSTALL} -d -m 0750 -o root -g ${OSSEC_GROUP} ${PREFIX}/ruleset
   ${INSTALL} -d -m 0750 -o root -g ${OSSEC_GROUP} ${PREFIX}/ruleset/sca
@@ -841,9 +809,21 @@ InstallCommon()
   ${INSTALL} -d -m 0770 -o root -g ${OSSEC_GROUP} ${PREFIX}/.ssh
 
   ./init/fw-check.sh execute
-  ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ../active-response/*.sh ${PREFIX}/active-response/bin/
-  ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ../active-response/*.py ${PREFIX}/active-response/bin/
-  ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ../active-response/firewalls/*.sh ${PREFIX}/active-response/bin/
+  ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} active-response/*.sh ${PREFIX}/active-response/bin/
+  ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} active-response/*.py ${PREFIX}/active-response/bin/
+  ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} firewall-drop ${PREFIX}/active-response/bin/
+  ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} default-firewall-drop ${PREFIX}/active-response/bin/
+  ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} pf ${PREFIX}/active-response/bin/
+  ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} npf ${PREFIX}/active-response/bin/
+  ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ipfw ${PREFIX}/active-response/bin/
+  ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} firewalld-drop ${PREFIX}/active-response/bin/
+  ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} disable-account ${PREFIX}/active-response/bin/
+  ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} host-deny ${PREFIX}/active-response/bin/
+  ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ip-customblock ${PREFIX}/active-response/bin/
+  ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} restart-wazuh ${PREFIX}/active-response/bin/
+  ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} route-null ${PREFIX}/active-response/bin/
+  ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} kaspersky ${PREFIX}/active-response/bin/
+  ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} wazuh-slack ${PREFIX}/active-response/bin/
 
   ${INSTALL} -d -m 0750 -o root -g ${OSSEC_GROUP} ${PREFIX}/var
   ${INSTALL} -d -m 0770 -o root -g ${OSSEC_GROUP} ${PREFIX}/var/run
@@ -874,35 +854,30 @@ InstallLocal()
     ${INSTALL} -d -m 0750 -o ${OSSEC_USER} -g ${OSSEC_GROUP} ${PREFIX}/logs/archives
     ${INSTALL} -d -m 0750 -o ${OSSEC_USER} -g ${OSSEC_GROUP} ${PREFIX}/logs/alerts
     ${INSTALL} -d -m 0750 -o ${OSSEC_USER} -g ${OSSEC_GROUP} ${PREFIX}/logs/firewall
+    ${INSTALL} -d -m 0750 -o ${OSSEC_USER} -g ${OSSEC_GROUP} ${PREFIX}/logs/api
     ${INSTALL} -d -m 0770 -o root -g ${OSSEC_GROUP} ${PREFIX}/etc/rootcheck
 
-    ${INSTALL} -m 0750 -o root -g 0 ossec-agentlessd ${PREFIX}/bin
-    ${INSTALL} -m 0750 -o root -g 0 ossec-analysisd ${PREFIX}/bin
-    ${INSTALL} -m 0750 -o root -g 0 ossec-monitord ${PREFIX}/bin
-    ${INSTALL} -m 0750 -o root -g 0 ossec-reportd ${PREFIX}/bin
-    ${INSTALL} -m 0750 -o root -g 0 ossec-maild ${PREFIX}/bin
-    ${INSTALL} -m 0750 -o root -g 0 ossec-logtest ${PREFIX}/bin
-    ${INSTALL} -m 0750 -o root -g 0 ossec-csyslogd ${PREFIX}/bin
-    ${INSTALL} -m 0750 -o root -g 0 ossec-dbd ${PREFIX}/bin
-    ${INSTALL} -m 0750 -o root -g 0 ossec-makelists ${PREFIX}/bin
+    ${INSTALL} -m 0750 -o root -g 0 wazuh-agentlessd ${PREFIX}/bin
+    ${INSTALL} -m 0750 -o root -g 0 wazuh-analysisd ${PREFIX}/bin
+    ${INSTALL} -m 0750 -o root -g 0 wazuh-monitord ${PREFIX}/bin
+    ${INSTALL} -m 0750 -o root -g 0 wazuh-reportd ${PREFIX}/bin
+    ${INSTALL} -m 0750 -o root -g 0 wazuh-maild ${PREFIX}/bin
+    ${INSTALL} -m 0750 -o root -g 0 wazuh-csyslogd ${PREFIX}/bin
+    ${INSTALL} -m 0750 -o root -g 0 wazuh-dbd ${PREFIX}/bin
     ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} verify-agent-conf ${PREFIX}/bin/
     ${INSTALL} -m 0750 -o root -g 0 clear_stats ${PREFIX}/bin/
-    ${INSTALL} -m 0750 -o root -g 0 ossec-regex ${PREFIX}/bin/
-    ${INSTALL} -m 0750 -o root -g 0 syscheck_update ${PREFIX}/bin/
+    ${INSTALL} -m 0750 -o root -g 0 wazuh-regex ${PREFIX}/bin/
     ${INSTALL} -m 0750 -o root -g 0 agent_control ${PREFIX}/bin/
-    ${INSTALL} -m 0750 -o root -g 0 syscheck_control ${PREFIX}/bin/
-    ${INSTALL} -m 0750 -o root -g 0 rootcheck_control ${PREFIX}/bin/
-    ${INSTALL} -m 0750 -o root -g 0 ossec-integratord ${PREFIX}/bin/
+    ${INSTALL} -m 0750 -o root -g 0 wazuh-integratord ${PREFIX}/bin/
     ${INSTALL} -m 0750 -o root -g 0 wazuh-db ${PREFIX}/bin/
 
     ${INSTALL} -d -m 0750 -o ${OSSEC_USER} -g ${OSSEC_GROUP} ${PREFIX}/stats
     ${INSTALL} -d -m 0750 -o root -g ${OSSEC_GROUP} ${PREFIX}/ruleset/decoders
     ${INSTALL} -d -m 0750 -o root -g ${OSSEC_GROUP} ${PREFIX}/ruleset/rules
 
-    ${INSTALL} -m 0640 -o root -g ${OSSEC_GROUP} -b update/ruleset/RULESET_VERSION ${PREFIX}/ruleset/VERSION
-    ${INSTALL} -m 0640 -o root -g ${OSSEC_GROUP} -b ../etc/rules/*.xml ${PREFIX}/ruleset/rules
-    ${INSTALL} -m 0640 -o root -g ${OSSEC_GROUP} -b ../etc/decoders/*.xml ${PREFIX}/ruleset/decoders
-    ${INSTALL} -m 0660 -o root -g ${OSSEC_GROUP} rootcheck/db/*.txt ${PREFIX}/etc/rootcheck
+    ${INSTALL} -m 0640 -o root -g ${OSSEC_GROUP} -b ../ruleset/rules/*.xml ${PREFIX}/ruleset/rules
+    ${INSTALL} -m 0640 -o root -g ${OSSEC_GROUP} -b ../ruleset/decoders/*.xml ${PREFIX}/ruleset/decoders
+    ${INSTALL} -m 0660 -o root -g ${OSSEC_GROUP} ../ruleset/rootcheck/db/*.txt ${PREFIX}/etc/rootcheck
 
     InstallSecurityConfigurationAssessmentFiles "manager"
 
@@ -912,8 +887,6 @@ InstallLocal()
     else
         LIB_FLAG="no"
     fi
-
-    ${MAKEBIN} --quiet -C ../framework install PREFIX=${PREFIX} USE_FRAMEWORK_LIB=${LIB_FLAG}
 
     if [ ! -f ${PREFIX}/etc/decoders/local_decoder.xml ]; then
         ${INSTALL} -m 0660 -o ossec -g ${OSSEC_GROUP} -b ../etc/local_decoder.xml ${PREFIX}/etc/decoders/local_decoder.xml
@@ -926,18 +899,16 @@ InstallLocal()
     fi
     if [ ! -f ${PREFIX}/etc/lists/amazon ]; then
         ${INSTALL} -d -m 0770 -o ossec -g ${OSSEC_GROUP} ${PREFIX}/etc/lists/amazon
-        ${INSTALL} -m 0660 -o ossec -g ${OSSEC_GROUP} -b ../etc/lists/amazon/* ${PREFIX}/etc/lists/amazon/
+        ${INSTALL} -m 0660 -o ossec -g ${OSSEC_GROUP} -b ../ruleset/lists/amazon/* ${PREFIX}/etc/lists/amazon/
     fi
     if [ ! -f ${PREFIX}/etc/lists/audit-keys ]; then
-        ${INSTALL} -m 0660 -o ossec -g ${OSSEC_GROUP} -b ../etc/lists/audit-keys ${PREFIX}/etc/lists/audit-keys
+        ${INSTALL} -m 0660 -o ossec -g ${OSSEC_GROUP} -b ../ruleset/lists/audit-keys ${PREFIX}/etc/lists/audit-keys
     fi
     if [ ! -f ${PREFIX}/etc/lists/security-eventchannel ]; then
-        ${INSTALL} -m 0660 -o ossec -g ${OSSEC_GROUP} -b ../etc/lists/security-eventchannel ${PREFIX}/etc/lists/security-eventchannel
+        ${INSTALL} -m 0660 -o ossec -g ${OSSEC_GROUP} -b ../ruleset/lists/security-eventchannel ${PREFIX}/etc/lists/security-eventchannel
     fi
 
     ${INSTALL} -d -m 0750 -o ${OSSEC_USER} -g ${OSSEC_GROUP} ${PREFIX}/queue/fts
-    ${INSTALL} -d -m 0750 -o ${OSSEC_USER} -g ${OSSEC_GROUP} ${PREFIX}/queue/rootcheck
-    ${INSTALL} -d -m 0770 -o ${OSSEC_USER_REM} -g ${OSSEC_GROUP} ${PREFIX}/queue/agent-info
     ${INSTALL} -d -m 0750 -o ${OSSEC_USER} -g ${OSSEC_GROUP} ${PREFIX}/queue/agentless
     ${INSTALL} -d -m 0750 -o ${OSSEC_USER} -g ${OSSEC_GROUP} ${PREFIX}/queue/db
 
@@ -948,6 +919,36 @@ InstallLocal()
     touch ${PREFIX}/logs/integrations.log
     chmod 640 ${PREFIX}/logs/integrations.log
     chown ${OSSEC_USER_MAIL}:${OSSEC_GROUP} ${PREFIX}/logs/integrations.log
+
+    if [ "X${OPTIMIZE_CPYTHON}" = "Xy" ]; then
+        CPYTHON_FLAGS="OPTIMIZE_CPYTHON=yes"
+    fi
+
+    # Install Vulnerability Detector files
+    ${INSTALL} -d -m 0660 -o root -g ${OSSEC_GROUP} ${PREFIX}/queue/vulnerabilities
+    ${INSTALL} -d -m 0440 -o root -g ${OSSEC_GROUP} ${PREFIX}/queue/vulnerabilities/dictionaries
+    ${INSTALL} -m 0440 -o root -g ${OSSEC_GROUP} wazuh_modules/vulnerability_detector/cpe_helper.json ${PREFIX}/queue/vulnerabilities/dictionaries
+
+    # Install Task Manager files
+    ${INSTALL} -d -m 0770 -o ${OSSEC_USER} -g ${OSSEC_GROUP} ${PREFIX}/queue/tasks
+
+    ### Install Python
+    ${MAKEBIN} wpython PREFIX=${PREFIX} TARGET=${INSTYPE}
+
+    ${MAKEBIN} --quiet -C ../framework install PREFIX=${PREFIX} USE_FRAMEWORK_LIB=${LIB_FLAG}
+
+    ### Backup old API
+    if [ "X${update_only}" = "Xyes" ]; then
+      ${MAKEBIN} --quiet -C ../api backup PREFIX=${PREFIX} REVISION=${REVISION}
+    fi
+
+    ### Install API
+    ${MAKEBIN} --quiet -C ../api install PREFIX=${PREFIX}
+
+    ### Restore old API
+    if [ "X${update_only}" = "Xyes" ]; then
+      ${MAKEBIN} --quiet -C ../api restore PREFIX=${PREFIX} REVISION=${REVISION}
+    fi
 }
 
 TransferShared()
@@ -966,14 +967,13 @@ InstallServer()
     ${INSTALL} -d -m 0770 -o ${OSSEC_USER} -g ${OSSEC_GROUP} ${PREFIX}/queue/cluster
     ${INSTALL} -d -m 0750 -o ${OSSEC_USER} -g ${OSSEC_GROUP} ${PREFIX}/logs/cluster
 
-    ${INSTALL} -d -m 0760 -o root -g ${OSSEC_GROUP} ${PREFIX}/queue/vulnerabilities
     ${INSTALL} -d -m 0770 -o ossec -g ${OSSEC_GROUP} ${PREFIX}/etc/shared/default
     ${INSTALL} -d -m 0750 -o root -g ${OSSEC_GROUP} ${PREFIX}/backup/shared
 
     TransferShared
 
-    ${INSTALL} -m 0750 -o root -g 0 ossec-remoted ${PREFIX}/bin
-    ${INSTALL} -m 0750 -o root -g 0 ossec-authd ${PREFIX}/bin
+    ${INSTALL} -m 0750 -o root -g 0 wazuh-remoted ${PREFIX}/bin
+    ${INSTALL} -m 0750 -o root -g 0 wazuh-authd ${PREFIX}/bin
 
     ${INSTALL} -d -m 0770 -o ${OSSEC_USER_REM} -g ${OSSEC_GROUP} ${PREFIX}/queue/rids
     ${INSTALL} -d -m 0770 -o root -g ${OSSEC_GROUP} ${PREFIX}/queue/agent-groups
@@ -985,7 +985,7 @@ InstallServer()
     ${INSTALL} -d -m 0750 -o ${OSSEC_USER} -g ${OSSEC_GROUP} ${PREFIX}/backup/agents
     ${INSTALL} -d -m 0750 -o ${OSSEC_USER} -g ${OSSEC_GROUP} ${PREFIX}/backup/groups
 
-    ${INSTALL} -m 0660 -o ossec -g ${OSSEC_GROUP} rootcheck/db/*.txt ${PREFIX}/etc/shared/default
+    ${INSTALL} -m 0660 -o ossec -g ${OSSEC_GROUP} ../ruleset/rootcheck/db/*.txt ${PREFIX}/etc/shared/default
 
     if [ ! -f ${PREFIX}/etc/shared/default/agent.conf ]; then
         ${INSTALL} -m 0660 -o ossec -g ${OSSEC_GROUP} ../etc/agent.conf ${PREFIX}/etc/shared/default
@@ -996,18 +996,15 @@ InstallServer()
     fi
 
     # Install the plugins files
-    ${INSTALL} -d -m 0750 -o root -g ${OSSEC_GROUP} ${PREFIX}/wodles/oscap
-    ${INSTALL} -d -m 0750 -o root -g ${OSSEC_GROUP} ${PREFIX}/wodles/oscap/content
-
-    ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ../wodles/oscap/oscap.py ${PREFIX}/wodles/oscap
-    ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ../framework/wrappers/generic_wrapper.sh ${PREFIX}/wodles/oscap/oscap
-    ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ../wodles/oscap/template_*.xsl ${PREFIX}/wodles/oscap
-
-    InstallOpenSCAPFiles
-
     ${INSTALL} -d -m 0750 -o root -g ${OSSEC_GROUP} ${PREFIX}/wodles/aws
     ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ../wodles/aws/aws_s3.py ${PREFIX}/wodles/aws/aws-s3.py
     ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ../framework/wrappers/generic_wrapper.sh ${PREFIX}/wodles/aws/aws-s3
+
+    ${INSTALL} -d -m 0750 -o root -g ${OSSEC_GROUP} ${PREFIX}/wodles/gcloud
+    ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ../wodles/gcloud/gcloud.py ${PREFIX}/wodles/gcloud/gcloud.py
+    ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ../wodles/gcloud/integration.py ${PREFIX}/wodles/gcloud/integration.py
+    ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ../wodles/gcloud/tools.py ${PREFIX}/wodles/gcloud/tools.py
+    ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ../framework/wrappers/generic_wrapper.sh ${PREFIX}/wodles/gcloud/gcloud
 
     ${INSTALL} -d -m 0750 -o root -g ${OSSEC_GROUP} ${PREFIX}/wodles/docker
     ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ../wodles/docker-listener/DockerListener.py ${PREFIX}/wodles/docker/DockerListener.py
@@ -1024,12 +1021,6 @@ InstallServer()
     ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ../framework/wrappers/generic_wrapper.sh ${PREFIX}/integrations/slack
     ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ../framework/wrappers/generic_wrapper.sh ${PREFIX}/integrations/virustotal
 
-    if [ "X${OPTIMIZE_CPYTHON}" == "Xy" ]; then
-        CPYTHON_FLAGS="OPTIMIZE_CPYTHON=yes"
-    fi
-
-    ### Install Python
-    ${MAKEBIN} wpython PREFIX=${PREFIX}
 }
 
 InstallAgent()
@@ -1039,36 +1030,34 @@ InstallAgent()
 
     InstallSecurityConfigurationAssessmentFiles "agent"
 
-    ${INSTALL} -m 0750 -o root -g 0 ossec-agentd ${PREFIX}/bin
+    ${INSTALL} -m 0750 -o root -g 0 wazuh-agentd ${PREFIX}/bin
     ${INSTALL} -m 0750 -o root -g 0 agent-auth ${PREFIX}/bin
 
     ${INSTALL} -d -m 0750 -o ${OSSEC_USER} -g ${OSSEC_GROUP} ${PREFIX}/queue/rids
     ${INSTALL} -d -m 0770 -o root -g ${OSSEC_GROUP} ${PREFIX}/var/incoming
-    ${INSTALL} -m 0660 -o root -g ${OSSEC_GROUP} rootcheck/db/*.txt ${PREFIX}/etc/shared/
+    ${INSTALL} -m 0660 -o root -g ${OSSEC_GROUP} ../ruleset/rootcheck/db/*.txt ${PREFIX}/etc/shared/
     ${INSTALL} -m 0640 -o root -g ${OSSEC_GROUP} ../etc/wpk_root.pem ${PREFIX}/etc/
 
     # Install the plugins files
     # Don't install the plugins if they are already installed. This check affects
     # hybrid installation mode
-    if [ ! -d ${PREFIX}/wodles/oscap ]; then
-        ${INSTALL} -d -m 0750 -o root -g ${OSSEC_GROUP} ${PREFIX}/wodles/oscap
-        ${INSTALL} -d -m 0750 -o root -g ${OSSEC_GROUP} ${PREFIX}/wodles/oscap/content
-
-        ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ../wodles/oscap/oscap.py ${PREFIX}/wodles/oscap
-        ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ../wodles/oscap/template_*.xsl ${PREFIX}/wodles/oscap
-
-        InstallOpenSCAPFiles
-    fi
-
     if [ ! -d ${PREFIX}/wodles/aws ]; then
         ${INSTALL} -d -m 0750 -o root -g ${OSSEC_GROUP} ${PREFIX}/wodles/aws
         ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ../wodles/aws/aws_s3.py ${PREFIX}/wodles/aws/aws-s3
+    fi
+
+    if [ ! -d ${PREFIX}/wodles/gcloud ]; then
+        ${INSTALL} -d -m 0750 -o root -g ${OSSEC_GROUP} ${PREFIX}/wodles/gcloud
+        ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ../wodles/gcloud/gcloud.py ${PREFIX}/wodles/gcloud/gcloud
+        ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ../wodles/gcloud/integration.py ${PREFIX}/wodles/gcloud/integration.py
+        ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ../wodles/gcloud/tools.py ${PREFIX}/wodles/gcloud/tools.py
     fi
 
     if [ ! -d ${PREFIX}/wodles/docker ]; then
         ${INSTALL} -d -m 0750 -o root -g ${OSSEC_GROUP} ${PREFIX}/wodles/docker
         ${INSTALL} -m 0750 -o root -g ${OSSEC_GROUP} ../wodles/docker-listener/DockerListener.py ${PREFIX}/wodles/docker/DockerListener
     fi
+
 }
 
 InstallWazuh()
@@ -1077,17 +1066,8 @@ InstallWazuh()
         InstallAgent
     elif [ "X$INSTYPE" = "Xserver" ]; then
         InstallServer
-        InstallCDB
     elif [ "X$INSTYPE" = "Xlocal" ]; then
         InstallLocal
-        InstallCDB
     fi
 
-}
-
-
-InstallCDB()
-{
-    echo "Building CDB lists..."
-    ${PREFIX}/bin/ossec-makelists > /dev/null 2>&1
 }

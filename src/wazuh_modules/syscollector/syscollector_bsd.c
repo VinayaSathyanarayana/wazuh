@@ -1,9 +1,9 @@
 /*
  * Wazuh Module for System inventory for Linux
- * Copyright (C) 2015-2019, Wazuh Inc.
+ * Copyright (C) 2015-2020, Wazuh Inc.
  * Sep, 2017.
  *
- * This program is a free software; you can redistribute it
+ * This program is free software; you can redistribute it
  * and/or modify it under the terms of the GNU General Public
  * License (version 2) as published by the FSF - Free Software
  * Foundation.
@@ -14,20 +14,42 @@
 #if defined(__MACH__) || defined(__FreeBSD__) || defined(__OpenBSD__)
 
 #include <sys/types.h>
-#include <sys/sysctl.h>
 #include <sys/vmmeter.h>
 #include <sys/sysctl.h>
 #include <sys/socket.h>
 #include <net/if.h>
 #include <net/if_dl.h>
+#include <net/if_types.h>
+#include <net/route.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <net/if_types.h>
 #include <ifaddrs.h>
 #include <string.h>
-#include <net/route.h>
+
+#ifdef WAZUH_UNIT_TESTING
+#define STATIC
+#include "unit_tests/wrappers/macos/libc/stdio_wrappers.h"
+#include "unit_tests/wrappers/macos/libplist_wrappers.h"
+#include "unit_tests/wrappers/macos/libwazuh_wrappers.h"
+#include "unit_tests/wrappers/macos/posix/dirent_wrappers.h"
+#else
+#define STATIC static
+#endif
 
 #ifdef __MACH__
+
+#include <ctype.h>
+#include <libproc.h>
+#include <pwd.h>
+#include <grp.h>
+#include <sys/resource.h>
+#include <sys/proc.h>
+#include <sys/proc_info.h>
+#include <netdb.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include "external/libplist/include/plist/plist.h"
+
 #if !HAVE_SOCKADDR_SA_LEN
 #define SA_LEN(sa)      af_to_len(sa->sa_family)
 #if HAVE_SIOCGLIFNUM
@@ -42,173 +64,77 @@
 
 hw_info *get_system_bsd();    // Get system information
 
-#ifdef __MACH__
-    OSHash *gateways;
-#endif
-
 #if defined(__MACH__)
 
-char* sys_parse_pkg(const char * app_folder, const char * timestamp, int random_id);
+const char * package_directories [] = {
+    "/Applications",
+    "/Applications/Utilities",
+    "/System/Applications",
+    "/System/Applications/Utilities",
+    "/System/Library/CoreServices",
+    NULL
+};
 
-// Get installed programs inventory
+const char * homebrew_directories [] = {
+    "/usr/local/Cellar",
+    NULL
+};
 
-void sys_packages_bsd(int queue_fd, const char* LOCATION){
+// Black-list to discard packages that are part of the OS itself
+const char * discarded_packages [] = {
+    "Siri",
+    "iCloud",
+    NULL
+};
+
+// Valid package version keys.
+// The custom versions take priority over the default one.
+const char * plist_versions [] = {
+    "CFBundleShortVersionString", //default
+    "CliVersion"
+};
+
+STATIC int sys_read_apps(const char * app_folder, const char * timestamp, int random_id, int queue_fd, const char* LOCATION);
+STATIC int sys_read_homebrew_apps(const char * app_folder, const char * timestamp, int random_id, int queue_fd, const char* LOCATION);
+STATIC cJSON* sys_parse_pkg(const char * app_folder);
+STATIC bool sys_convert_bin_plist(FILE **fp, char *magic_bytes, char *filepath);
+
+STATIC char *get_port_state();
+
+/**
+ * @brief Get installed programs inventory
+ *
+ * @param queue_fd File descriptor of the queue to send events.
+ * @param LOCATION Identifier of the component to attach it to the events.
+ **/
+void sys_packages_bsd(int queue_fd, const char* LOCATION) {
 
     int random_id = os_random();
-    char *timestamp;
-    time_t now;
-    struct tm localtm;
-    struct dirent *de;
-    DIR *dr;
-    char path[PATH_LENGTH];
-
-    // Define time to sleep between messages sent
-    int usec = 1000000 / wm_max_eps;
-
-    // Set timestamp
-
-    now = time(NULL);
-    localtime_r(&now, &localtm);
-
-    os_calloc(TIME_LENGTH, sizeof(char), timestamp);
-
-    snprintf(timestamp,TIME_LENGTH-1,"%d/%02d/%02d %02d:%02d:%02d",
-            localtm.tm_year + 1900, localtm.tm_mon + 1,
-            localtm.tm_mday, localtm.tm_hour, localtm.tm_min, localtm.tm_sec);
+    char *timestamp = w_get_timestamp(time(NULL));
+    int i = 0;
 
     mtdebug1(WM_SYS_LOGTAG, "Starting installed packages inventory.");
 
     /* Set positive random ID for each event */
 
-    if (random_id < 0)
+    if (random_id < 0) {
         random_id = -random_id;
-
-    dr = opendir(MAC_APPS);
-
-    if (dr == NULL) {
-        mterror("Unable to open '%s' directory", MAC_APPS);
-    } else {
-
-        while ((de = readdir(dr)) != NULL) {
-
-            // Skip not intereset files
-            if (strncmp(de->d_name, ".", 1) == 0 || strncmp(de->d_name, "..", 2) == 0) {
-                continue;
-            } else if (strstr(de->d_name, ".app")) {
-                snprintf(path, PATH_LENGTH - 1, "%s/%s", MAC_APPS, de->d_name);
-                char * string = NULL;
-                if (string = sys_parse_pkg(path, timestamp, random_id), string) {
-
-                    mtdebug2(WM_SYS_LOGTAG, "sys_packages_bsd() sending '%s'", string);
-                    wm_sendmsg(usec, queue_fd, string, LOCATION, SYSCOLLECTOR_MQ);
-                    free(string);
-
-                } else
-                    mterror(WM_SYS_LOGTAG, "Unable to get package information for '%s'", de->d_name);
-            }
-        }
-        closedir(dr);
     }
 
-    dr = opendir(UTILITIES);
-
-    if (dr == NULL) {
-        mterror("Unable to open '%s' directory", UTILITIES);
-    } else {
-
-        while ((de = readdir(dr)) != NULL) {
-
-            // Skip not intereset files
-            if (strncmp(de->d_name, ".", 1) == 0 || strncmp(de->d_name, "..", 2) == 0) {
-                continue;
-            } else if (strstr(de->d_name, ".app")) {
-                snprintf(path, PATH_LENGTH - 1, "%s/%s", UTILITIES, de->d_name);
-                char * string = NULL;
-                if (string = sys_parse_pkg(path, timestamp, random_id), string) {
-
-                    mtdebug2(WM_SYS_LOGTAG, "sys_packages_bsd() sending '%s'", string);
-                    wm_sendmsg(usec, queue_fd, string, LOCATION, SYSCOLLECTOR_MQ);
-                    free(string);
-
-                } else
-                    mterror(WM_SYS_LOGTAG, "Unable to get package information for '%s'", de->d_name);
-            }
+    // Standard apps search
+    for (i = 0; package_directories[i]; i++) {
+        mtdebug1(WM_SYS_LOGTAG, "Collecting installed applications from '%s'", package_directories[i]);
+        if (sys_read_apps(package_directories[i], timestamp, random_id, queue_fd, LOCATION)) {
+            mtdebug1(WM_SYS_LOGTAG, "Unable to read installed applications from '%s'", package_directories[i]);
         }
-        closedir(dr);
     }
 
-    /* Get Homebrew applications */
-
-    dr = opendir(HOMEBREW_APPS);
-
-    if (dr == NULL) {
-        mtdebug1("No homebrew applications found in '%s'", HOMEBREW_APPS);
-    } else {
-
-        DIR *dir;
-        struct dirent *version;
-
-        while ((de = readdir(dr)) != NULL) {
-
-            if (strncmp(de->d_name, ".", 1) == 0 || strncmp(de->d_name, "..", 2) == 0) {
-                continue;
-            }
-
-            cJSON *object = cJSON_CreateObject();
-            cJSON *package = cJSON_CreateObject();
-            cJSON_AddStringToObject(object, "type", "program");
-            cJSON_AddNumberToObject(object, "ID", random_id);
-            cJSON_AddStringToObject(object, "timestamp", timestamp);
-            cJSON_AddItemToObject(object, "program", package);
-            cJSON_AddStringToObject(package, "format", "pkg");
-            cJSON_AddStringToObject(package, "name", de->d_name);
-
-            snprintf(path, PATH_LENGTH - 1, "%s/%s", HOMEBREW_APPS, de->d_name);
-            cJSON_AddStringToObject(package, "location", path);
-            cJSON_AddStringToObject(package, "source", "homebrew");
-
-            dir = opendir(path);
-            if (dir != NULL) {
-                while ((version = readdir(dir)) != NULL) {
-                    if (strncmp(version->d_name, ".", 1) == 0 || strncmp(version->d_name, "..", 2) == 0) {
-                        continue;
-                    }
-
-                    cJSON_AddStringToObject(package, "version", version->d_name);
-                    snprintf(path, PATH_LENGTH - 1, "%s/%s/%s/.brew/%s.rb", HOMEBREW_APPS, de->d_name, version->d_name, de->d_name);
-
-                    char read_buff[OS_MAXSTR];
-                    FILE *fp;
-
-                    if ((fp = fopen(path, "r"))) {
-                        int found = 0;
-                        while(fgets(read_buff, OS_MAXSTR - 1, fp) != NULL && !found){
-                            if (strstr(read_buff, "desc \"") != NULL) {
-                                found = 1;
-                                char ** parts = OS_StrBreak('"', read_buff, 3);
-                                cJSON_AddStringToObject(package, "description", parts[1]);
-                                int i;
-                                for (i = 0; parts[i]; ++i) {
-                                    free(parts[i]);
-                                }
-                                free(parts);
-                            }
-                        }
-                        fclose(fp);
-                    }
-                }
-                closedir(dir);
-            }
-
-            /* Send package information */
-            char *string;
-            string = cJSON_PrintUnformatted(object);
-            mtdebug2(WM_SYS_LOGTAG, "sys_packages_bsd() sending '%s'", string);
-            wm_sendmsg(usec, queue_fd, string, LOCATION, SYSCOLLECTOR_MQ);
-            cJSON_Delete(object);
-            free(string);
+    // Homebrew packages
+    for (i = 0; homebrew_directories[i]; i++) {
+        mtdebug1(WM_SYS_LOGTAG, "Collecting brew installed applications from '%s'", homebrew_directories[i]);
+        if (sys_read_homebrew_apps(homebrew_directories[i], timestamp, random_id, queue_fd, LOCATION)) {
+            mtdebug1(WM_SYS_LOGTAG, "Unable to read installed applications from '%s'", homebrew_directories[i]);
         }
-        closedir(dr);
     }
 
     cJSON *object = cJSON_CreateObject();
@@ -216,27 +142,399 @@ void sys_packages_bsd(int queue_fd, const char* LOCATION){
     cJSON_AddNumberToObject(object, "ID", random_id);
     cJSON_AddStringToObject(object, "timestamp", timestamp);
 
-    char *string;
+    char *string = NULL;
     string = cJSON_PrintUnformatted(object);
-    mtdebug2(WM_SYS_LOGTAG, "sys_packages_bsd() sending '%s'", string);
-    wm_sendmsg(usec, queue_fd, string, LOCATION, SYSCOLLECTOR_MQ);
+    mtdebug2(WM_SYS_LOGTAG, "Sending '%s'", string);
+    wm_sendmsg(0, queue_fd, string, LOCATION, SYSCOLLECTOR_MQ);
     cJSON_Delete(object);
-    free(string);
-    free(timestamp);
+    os_free(string);
+    os_free(timestamp);
 }
 
-char* sys_parse_pkg(const char * app_folder, const char * timestamp, int random_id) {
+/**
+ * @brief Read macOS applications installed in a given directory.
+ *
+ * @param app_folder Path to the directory to scan.
+ * @param timestamp Timestamp of the scan to be attached to the events.
+ * @param random_id Id of the scan, to be attached to the events.
+ * @param queue_fd File descriptor of the queue to send events.
+ * @param LOCATION Identifier of the component to attach it to the events.
+ * @return 0 on success, 1 otherwise.
+ **/
+int sys_read_apps(const char * app_folder, const char * timestamp, int random_id, int queue_fd, const char* LOCATION) {
 
-    char read_buff[OS_MAXSTR];
-    char filepath[PATH_LENGTH];
-    FILE *fp;
+    struct dirent *de = NULL;
+    DIR *dr = NULL;
+    char path[PATH_LENGTH] = {0};
+
+    // Define time to sleep between sent messages
+    int usec = 1000000 / wm_max_eps;
+
+    dr = opendir(app_folder);
+
+    if (dr == NULL) {
+        if (errno != ENOTDIR) {
+            mterror(WM_SYS_LOGTAG, "Unable to open '%s' directory due to '%s'", app_folder, strerror(errno));
+        }
+        return 1;
+    }
+
+    while ((de = readdir(dr)) != NULL) {
+
+        // Full path
+        snprintf(path, PATH_LENGTH - 1, "%s/%s", app_folder, de->d_name);
+
+        // Skip not interested files
+        if (!strncmp(de->d_name, ".", 1)) {
+            continue;
+        }
+
+        char * end = strrchr(de->d_name, '.');
+
+        if (end && !strcmp(end, ".app")) {
+
+            cJSON * object = sys_parse_pkg(path);
+
+            if (!object) {
+                mtdebug1(WM_SYS_LOGTAG, "Unable to get package information for '%s'", de->d_name);
+                continue;
+            }
+
+            // Discard undesired packages
+            cJSON * package = cJSON_GetObjectItem(object, "program");
+            cJSON * name = cJSON_GetObjectItem(package, "name");
+            int found = 0;
+            if (name) {
+                for (int i = 0; discarded_packages[i]; i++) {
+                    if (!strcasecmp(name->valuestring, discarded_packages[i])) {
+                        found = 1;
+                        break;
+                    }
+                }
+                if (found) {
+                    mtdebug2(WM_SYS_LOGTAG, "Skipping package '%s' since it belongs the OS.", name->valuestring);
+                    cJSON_Delete(object);
+                    continue;
+                }
+            }
+
+            cJSON_AddNumberToObject(object, "ID", random_id);
+            cJSON_AddStringToObject(object, "timestamp", timestamp);
+            char * string;
+            string = cJSON_PrintUnformatted(object);
+            cJSON_Delete(object);
+
+            mtdebug2(WM_SYS_LOGTAG, "Sending '%s'", string);
+            wm_sendmsg(usec, queue_fd, string, LOCATION, SYSCOLLECTOR_MQ);
+
+            os_free(string);
+
+        }
+    }
+
+    closedir(dr);
+
+    return 0;
+}
+
+/**
+ * @brief Check whether the given plist string contains a
+ * valid and supported 'version' key.
+ *
+ * @param line String with version key.
+ * @return True if it's valid, False otherwise.
+ **/
+bool sys_valid_plist_pkg_version (const char *line) {
+    int8_t dic_size = array_size(plist_versions);
+
+    for (int8_t i = 0; i < dic_size; i++) {
+        if (strstr(line, plist_versions[i])) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * @brief Read macOS plist files
+ *
+ * @param app_folder Path to the directory where the plist file is located.
+ * @return JSON structure with the parsed fields, NULL on error
+ **/
+cJSON* sys_parse_pkg(const char * app_folder) {
+
+    char read_buff[OS_MAXSTR] = {0};
+    char filepath[PATH_LENGTH] = {0};
+    FILE *fp = NULL;
     int i = 0;
-    int invalid = 0;
+    int read_name = 0;
+    char * vendor_name = NULL;
+    char * package_name = NULL;
 
     snprintf(filepath, PATH_LENGTH - 1, "%s/%s", app_folder, INFO_FILE);
-    memset(read_buff, 0, OS_MAXSTR);
 
-    if ((fp = fopen(filepath, "r"))) {
+    if (fp = fopen(filepath, "rb"), !fp) {
+        mtdebug1(WM_SYS_LOGTAG, "Unable to open '%s' due to '%s'", filepath, strerror(errno));
+        return NULL;
+    }
+
+    cJSON *object = cJSON_CreateObject();
+    cJSON *package = cJSON_CreateObject();
+    cJSON_AddStringToObject(object, "type", "program");
+    cJSON_AddItemToObject(object, "program", package);
+    cJSON_AddStringToObject(package, "format", "pkg");
+
+    // Check if valid Info.plist file
+    if (fgets(read_buff, OS_MAXSTR - 1, fp) != NULL) {
+
+        if (!memcmp(read_buff, "bplist00", 8)) {  // Apple binary plist
+            sys_convert_bin_plist(&fp, (char *)read_buff, filepath);
+        }
+
+        if (strncmp(read_buff, "<?xml", 5)) {   // Unknown format
+            mtwarn(WM_SYS_LOGTAG, "Unable to read package information from '%s' (invalid format)", filepath);
+        } else {
+            // Valid Info.plist file
+            while(fgets(read_buff, OS_MAXSTR - 1, fp) != NULL) {
+
+                if (strstr(read_buff, "CFBundleName")) {
+
+                    if (strstr(read_buff, "<string>")){
+                        char ** parts = OS_StrBreak('>', read_buff, 4);
+                        char ** _parts = OS_StrBreak('<', parts[3], 2);
+
+                        if (normalize_mac_package_name(_parts[0], &vendor_name, &package_name)) {
+                            cJSON_AddStringToObject(package, "name", package_name);
+                            os_free(package_name);
+                            if (vendor_name) {
+                                cJSON_AddStringToObject(package, "vendor", vendor_name);
+                                os_free(vendor_name);
+                            }
+                        } else {
+                            cJSON_AddStringToObject(package, "name", _parts[0]);
+                        }
+
+                        for (i = 0; _parts[i]; i++) {
+                            os_free(_parts[i]);
+                        }
+                        os_free(_parts);
+
+                        for (i = 0; parts[i]; i++) {
+                            os_free(parts[i]);
+                        }
+                        os_free(parts);
+                        read_name = 1;
+                    }
+                    else if((fgets(read_buff, OS_MAXSTR - 1, fp) != NULL) && strstr(read_buff, "<string>")){
+                        char ** parts = OS_StrBreak('>', read_buff, 2);
+                        char ** _parts = OS_StrBreak('<', parts[1], 2);
+
+                        if (normalize_mac_package_name(_parts[0], &vendor_name, &package_name)) {
+                            cJSON_AddStringToObject(package, "name", package_name);
+                            os_free(package_name);
+                            if (vendor_name) {
+                                cJSON_AddStringToObject(package, "vendor", vendor_name);
+                                os_free(vendor_name);
+                            }
+                        } else {
+                            cJSON_AddStringToObject(package, "name", _parts[0]);
+                        }
+
+                        for (i = 0; _parts[i]; i++) {
+                            os_free(_parts[i]);
+                        }
+                        os_free(_parts);
+
+                        for (i = 0; parts[i]; i++) {
+                            os_free(parts[i]);
+                        }
+                        os_free(parts);
+                        read_name = 1;
+                    }
+                } else if (sys_valid_plist_pkg_version(read_buff) == true) {
+                    char ** parts = NULL;
+                    char ** _parts = NULL;
+                    char * delim = NULL;
+
+                    if (strstr(read_buff, "<string>")) {
+                        parts = OS_StrBreak('>', read_buff, 4);
+                        _parts =  OS_StrBreak('<', parts[3], 2);
+
+                    } else if ((fgets(read_buff, OS_MAXSTR - 1, fp) != NULL) &&
+                        strstr(read_buff, "<string>")) {
+                        parts = OS_StrBreak('>', read_buff, 2);
+                        _parts = OS_StrBreak('<', parts[1], 2);
+                    }
+
+                    if (_parts && (delim = strstr(_parts[0], " ("), delim)) {
+                        *delim = '\0';
+                    }
+
+                    if (parts && _parts) {
+                        // Save only the last pkg version available
+                        cJSON_DeleteItemFromObject(package, "version");
+                        cJSON_AddStringToObject(package, "version", _parts[0]);
+
+                        for (i = 0; _parts[i]; i++) {
+                            os_free(_parts[i]);
+                        }
+                        os_free(_parts);
+
+                        for (i = 0; parts[i]; i++) {
+                            os_free(parts[i]);
+                        }
+                        os_free(parts);
+                    }
+
+                } else if (strstr(read_buff, "LSApplicationCategoryType")){
+                    if (strstr(read_buff, "<string>")){
+                        char ** parts = OS_StrBreak('>', read_buff, 4);
+                        char ** _parts = OS_StrBreak('<', parts[3], 2);
+
+                        cJSON_AddStringToObject(package, "group", _parts[0]);
+
+                        for (i = 0; _parts[i]; i++) {
+                            os_free(_parts[i]);
+                        }
+                        os_free(_parts);
+
+                        for (i = 0; parts[i]; i++) {
+                            os_free(parts[i]);
+                        }
+                        os_free(parts);
+                    }
+                    else if((fgets(read_buff, OS_MAXSTR - 1, fp) != NULL) && strstr(read_buff, "<string>")){
+                        char ** parts = OS_StrBreak('>', read_buff, 2);
+                        char ** _parts = OS_StrBreak('<', parts[1], 2);
+
+                        cJSON_AddStringToObject(package, "group", _parts[0]);
+
+                        for (i = 0; _parts[i]; i++) {
+                            os_free(_parts[i]);
+                        }
+                        os_free(_parts);
+
+                        for (i = 0; parts[i]; i++) {
+                            os_free(parts[i]);
+                        }
+                        os_free(parts);
+                    }
+                } else if (strstr(read_buff, "CFBundleIdentifier")){
+                    if (strstr(read_buff, "<string>")){
+                        char ** parts = OS_StrBreak('>', read_buff, 4);
+                        char ** _parts = OS_StrBreak('<', parts[3], 2);
+
+                            vendor_name = get_vendor_mac(_parts[0]);
+                            if (vendor_name) {
+                                cJSON_AddStringToObject(package, "vendor", vendor_name);
+                                os_free(vendor_name);
+                            }
+                            cJSON_AddStringToObject(package, "description", _parts[0]);
+
+                        for (i = 0; _parts[i]; i++) {
+                            os_free(_parts[i]);
+                        }
+                        os_free(_parts);
+
+                        for (i = 0; parts[i]; i++) {
+                            os_free(parts[i]);
+                        }
+                        os_free(parts);
+                    }
+                    else if((fgets(read_buff, OS_MAXSTR - 1, fp) != NULL) && strstr(read_buff, "<string>")){
+                        char ** parts = OS_StrBreak('>', read_buff, 2);
+                        char ** _parts = OS_StrBreak('<', parts[1], 2);
+
+                            vendor_name = get_vendor_mac(_parts[0]);
+                            if (vendor_name) {
+                                cJSON_AddStringToObject(package, "vendor", vendor_name);
+                                os_free(vendor_name);
+                            }
+                            cJSON_AddStringToObject(package, "description", _parts[0]);
+
+                        for (i = 0; _parts[i]; i++) {
+                            os_free(_parts[i]);
+                        }
+                        os_free(_parts);
+
+                        for (i = 0; parts[i]; i++) {
+                            os_free(parts[i]);
+                        }
+                        os_free(parts);
+                    }
+                }
+            }
+        }
+    } else {
+        mtwarn(WM_SYS_LOGTAG, "Unable to read file '%s'", filepath);
+    }
+
+    cJSON_AddStringToObject(package, "location", app_folder);
+
+    if (!read_name) {
+        char * folder_cpy = NULL;
+        char * program_name = NULL;
+        char * end = NULL;
+
+        os_strdup(app_folder, folder_cpy);
+
+        // Extract program name from the path
+        program_name = strrchr(folder_cpy, '/');
+        program_name++;
+        end = strchr(program_name, '.');
+        *end = '\0';
+
+        if (normalize_mac_package_name(program_name, &vendor_name, &package_name)) {
+            cJSON_AddStringToObject(package, "name", package_name);
+            os_free(package_name);
+            if (vendor_name) {
+                cJSON_AddStringToObject(package, "vendor", vendor_name);
+                os_free(vendor_name);
+            }
+        } else {
+            cJSON_AddStringToObject(package, "name", program_name);
+        }
+        os_free(folder_cpy);
+    }
+
+    fclose(fp);
+    return object;
+
+}
+
+/**
+ * @brief Read macOS applications installed by homebrew.
+ *
+ * @param app_folder Path to the directory to scan.
+ * @param timestamp Timestamp of the scan to be attached to the events.
+ * @param random_id Id of the scan, to be attached to the events.
+ * @param queue_fd File descriptor of the queue to send events.
+ * @param LOCATION Identifier of the component to attach it to the events.
+ * @return 0 on success, 1 otherwise.
+ **/
+int sys_read_homebrew_apps(const char * app_folder, const char * timestamp, int random_id, int queue_fd, const char* LOCATION) {
+
+    DIR *dr = NULL;
+    char path[PATH_LENGTH] = {0};
+    struct dirent *de = NULL;
+    struct dirent *version = NULL;
+
+    // Define time to sleep between sent messages
+    int usec = 1000000 / wm_max_eps;
+
+    dr = opendir(app_folder);
+
+    if (dr == NULL) {
+        mtdebug1(WM_SYS_LOGTAG, "No homebrew applications found in '%s'", app_folder);
+        return 1;
+    }
+
+    while ((de = readdir(dr)) != NULL) {
+
+        if (strncmp(de->d_name, ".", 1) == 0) {
+            continue;
+        }
 
         cJSON *object = cJSON_CreateObject();
         cJSON *package = cJSON_CreateObject();
@@ -246,185 +544,130 @@ char* sys_parse_pkg(const char * app_folder, const char * timestamp, int random_
         cJSON_AddItemToObject(object, "program", package);
         cJSON_AddStringToObject(package, "format", "pkg");
 
-        // Check if valid Info.plist file (not an Apple binary property list)
-        if (fgets(read_buff, OS_MAXSTR - 1, fp) != NULL) {
-            if (strncmp(read_buff, "<?xml", 5)) {   // Invalid file
-                mtdebug1(WM_SYS_LOGTAG, "Unable to read package information from '%s' (invalid format).", filepath);
-                invalid = 1;
-            } else {
-                // Valid Info.plist file
-                while(fgets(read_buff, OS_MAXSTR - 1, fp) != NULL) {
+        // Some packages may come with a '@' followed up by the product's version.
+        // Since we already have said version, we can discard it.
+        char * tmp = NULL;
+        char * name_str = NULL;
+        os_strdup(de->d_name, name_str);
+        if (tmp = strchr(name_str, '@'), tmp != NULL) {
+            *tmp = '\0';
+        }
+        cJSON_AddStringToObject(package, "name", name_str);
+        os_free(name_str);
 
-                    if (strstr(read_buff, "CFBundleName")) {
+        snprintf(path, PATH_LENGTH - 1, "%s/%s", app_folder, de->d_name);
+        cJSON_AddStringToObject(package, "location", path);
 
-                        if (strstr(read_buff, "<string>")){
-                            char ** parts = OS_StrBreak('>', read_buff, 4);
-                            char ** _parts = OS_StrBreak('<', parts[3], 2);
+        DIR *dir = NULL;
+        dir = opendir(path);
+        if (dir != NULL) {
+            while ((version = readdir(dir)) != NULL) {
+                if (!strncmp(version->d_name, ".", 1)) {
+                    continue;
+                }
 
-                            cJSON_AddStringToObject(package, "name", _parts[0]);
+                char * version_str = NULL;
+                char * end = NULL;
+                os_strdup(version->d_name, version_str);
+                if (end = strchr(version_str, '_'), end) {
+                    // Clean version
+                    *end = '\0';
+                }
+                cJSON_AddStringToObject(package, "version", version_str);
+                os_free(version_str);
+                snprintf(path, PATH_LENGTH - 1, "%s/%s/%s/.brew/%s.rb", app_folder, de->d_name, version->d_name, de->d_name);
 
-                            for (i = 0; _parts[i]; i++) {
-                                os_free(_parts[i]);
+                char read_buff[OS_MAXSTR];
+                FILE *fp;
+
+                if (fp = fopen(path, "r"), fp) {
+                    while(fgets(read_buff, OS_MAXSTR - 1, fp) != NULL){
+                        if (strstr(read_buff, "desc \"") != NULL) {
+                            char ** parts = OS_StrBreak('"', read_buff, 3);
+                            cJSON_AddStringToObject(package, "description", parts[1]);
+                            int i;
+                            for (i = 0; parts[i]; ++i) {
+                                free(parts[i]);
                             }
-                            os_free(_parts);
-
-                            for (i = 0; parts[i]; i++) {
-                                os_free(parts[i]);
-                            }
-                            os_free(parts);
-                        }
-                        else if((fgets(read_buff, OS_MAXSTR - 1, fp) != NULL) && strstr(read_buff, "<string>")){
-                            char ** parts = OS_StrBreak('>', read_buff, 2);
-                            char ** _parts = OS_StrBreak('<', parts[1], 2);
-
-                            cJSON_AddStringToObject(package, "name", _parts[0]);
-
-                            for (i = 0; _parts[i]; i++) {
-                                os_free(_parts[i]);
-                            }
-                            os_free(_parts);
-
-                            for (i = 0; parts[i]; i++) {
-                                os_free(parts[i]);
-                            }
-                            os_free(parts);
-                        }
-
-                    } else if (strstr(read_buff, "CFBundleShortVersionString")){
-                        if (strstr(read_buff, "<string>")){
-                            char ** parts = OS_StrBreak('>', read_buff, 4);
-                            char ** _parts = OS_StrBreak('<', parts[3], 2);
-
-                            cJSON_AddStringToObject(package, "version", _parts[0]);
-
-                            for (i = 0; _parts[i]; i++) {
-                                os_free(_parts[i]);
-                            }
-                            os_free(_parts);
-
-                            for (i = 0; parts[i]; i++) {
-                                os_free(parts[i]);
-                            }
-                            os_free(parts);
-                        }
-                        else if ((fgets(read_buff, OS_MAXSTR - 1, fp) != NULL) && strstr(read_buff, "<string>")){
-                            char ** parts = OS_StrBreak('>', read_buff, 2);
-                            char ** _parts = OS_StrBreak('<', parts[1], 2);
-
-                            cJSON_AddStringToObject(package, "version", _parts[0]);
-
-                            for (i = 0; _parts[i]; i++) {
-                                os_free(_parts[i]);
-                            }
-                            os_free(_parts);
-
-                            for (i = 0; parts[i]; i++) {
-                                os_free(parts[i]);
-                            }
-                            os_free(parts);
-                        }
-                    } else if (strstr(read_buff, "LSApplicationCategoryType")){
-                        if (strstr(read_buff, "<string>")){
-                            char ** parts = OS_StrBreak('>', read_buff, 4);
-                            char ** _parts = OS_StrBreak('<', parts[3], 2);
-
-                            cJSON_AddStringToObject(package, "group", _parts[0]);
-
-                            for (i = 0; _parts[i]; i++) {
-                                os_free(_parts[i]);
-                            }
-                            os_free(_parts);
-
-                            for (i = 0; parts[i]; i++) {
-                                os_free(parts[i]);
-                            }
-                            os_free(parts);
-                        }
-                        else if((fgets(read_buff, OS_MAXSTR - 1, fp) != NULL) && strstr(read_buff, "<string>")){
-                            char ** parts = OS_StrBreak('>', read_buff, 2);
-                            char ** _parts = OS_StrBreak('<', parts[1], 2);
-
-                            cJSON_AddStringToObject(package, "group", _parts[0]);
-
-                            for (i = 0; _parts[i]; i++) {
-                                os_free(_parts[i]);
-                            }
-                            os_free(_parts);
-
-                            for (i = 0; parts[i]; i++) {
-                                os_free(parts[i]);
-                            }
-                            os_free(parts);
-                        }
-                    } else if (strstr(read_buff, "CFBundleIdentifier")){
-                        if (strstr(read_buff, "<string>")){
-                            char ** parts = OS_StrBreak('>', read_buff, 4);
-                            char ** _parts = OS_StrBreak('<', parts[3], 2);
-
-                            cJSON_AddStringToObject(package, "description", _parts[0]);
-
-                            for (i = 0; _parts[i]; i++) {
-                                os_free(_parts[i]);
-                            }
-                            os_free(_parts);
-
-                            for (i = 0; parts[i]; i++) {
-                                os_free(parts[i]);
-                            }
-                            os_free(parts);
-                        }
-                        else if((fgets(read_buff, OS_MAXSTR - 1, fp) != NULL) && strstr(read_buff, "<string>")){
-                            char ** parts = OS_StrBreak('>', read_buff, 2);
-                            char ** _parts = OS_StrBreak('<', parts[1], 2);
-
-                            cJSON_AddStringToObject(package, "description", _parts[0]);
-
-                            for (i = 0; _parts[i]; i++) {
-                                os_free(_parts[i]);
-                            }
-                            os_free(_parts);
-
-                            for (i = 0; parts[i]; i++) {
-                                os_free(parts[i]);
-                            }
-                            os_free(parts);
+                            free(parts);
+                            break;
                         }
                     }
+                    fclose(fp);
                 }
             }
-        } else {
-            mtwarn(WM_SYS_LOGTAG, "Unable to read file '%s'", filepath);
+            closedir(dir);
         }
 
-        if (strstr(app_folder, "/Utilities") != NULL) {
-            cJSON_AddStringToObject(package, "source", "utilities");
-        } else {
-            cJSON_AddStringToObject(package, "source", "applications");
-        }
-        cJSON_AddStringToObject(package, "location", app_folder);
-
-        if (invalid) {
-            char * program_name;
-            char * end;
-
-            // Extract program name from the path
-            program_name = strrchr(app_folder, '/');
-            program_name++;
-            end = strchr(program_name, '.');
-            *end = '\0';
-
-            cJSON_AddStringToObject(package, "name", program_name);
-        }
-
-        char *string;
+        /* Send package information */
+        char *string = NULL;
         string = cJSON_PrintUnformatted(object);
+        mtdebug2(WM_SYS_LOGTAG, "Sending '%s'", string);
+        wm_sendmsg(usec, queue_fd, string, LOCATION, SYSCOLLECTOR_MQ);
         cJSON_Delete(object);
-        fclose(fp);
-        return string;
+        os_free(string);
 
     }
 
-    return NULL;
+    closedir(dr);
+    return 0;
+}
+
+/**
+ * @brief Converts/Decompresses an Apple binary plist file into an XML.
+ *
+ * @param filepath Path of the binary file.
+ * @param magic_bytes The first bytes of the newly extracted XML.
+ * @param fp File Descriptor of the binary file. (On success, fp will point to the new XML file)
+ * @return True on success, false otherwise.
+ **/
+bool sys_convert_bin_plist(FILE **fp, char *magic_bytes, char *filepath) {
+    char * bin = MAP_FAILED;
+    char * xml = NULL;
+    uint32_t size = 0;
+    plist_t root_node = NULL;
+    struct stat filestats = {0};
+    int fd = fileno(*fp); // Retrieve the real file descriptor number.
+    bool status = false;
+
+    if (fstat(fd, &filestats) < 0) {
+        mterror(WM_SYS_LOGTAG, "Failed to stat file '%s': %s", filepath, strerror(errno));
+        goto clean;
+    }
+
+    bin = (char *) mmap(NULL, filestats.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (bin == MAP_FAILED) {
+        mterror(WM_SYS_LOGTAG, "Failed to mmap file '%s': %s", filepath, strerror(errno));
+        goto clean;
+    }
+
+
+    if (plist_from_bin(bin, filestats.st_size, &root_node), root_node == NULL) {
+        goto clean;
+    }
+
+    if (plist_to_xml(root_node, &xml, &size), !xml || !size) {
+        goto clean;
+    }
+
+    fclose(*fp);
+
+    if (*fp = tmpfile(), *fp == NULL) {
+        mterror(WM_SYS_LOGTAG, "Failed to open tmpfile: %s", strerror(errno));
+        goto clean;
+    }
+
+    fwrite(xml, size, sizeof(char), *fp);
+    fseek(*fp, 0, SEEK_SET);
+    fgets(magic_bytes, OS_MAXSTR - 1, *fp); // Hopefully the expected XML format.
+
+    status = true;
+
+clean:
+    if (root_node) plist_free(root_node);
+    if (bin != MAP_FAILED) munmap(bin, filestats.st_size);
+    os_free(xml);
+    return status;
 }
 
 #elif defined(__FreeBSD__)
@@ -438,22 +681,11 @@ void sys_packages_bsd(int queue_fd, const char* LOCATION){
     FILE *output;
     int i;
     int random_id = os_random();
-    char *timestamp;
-    time_t now;
-    struct tm localtm;
+    char *timestamp = w_get_timestamp(time(NULL));
     int status;
 
     // Define time to sleep between messages sent
     int usec = 1000000 / wm_max_eps;
-
-    now = time(NULL);
-    localtime_r(&now, &localtm);
-
-    os_calloc(TIME_LENGTH, sizeof(char), timestamp);
-
-    snprintf(timestamp,TIME_LENGTH-1,"%d/%02d/%02d %02d:%02d:%02d",
-            localtm.tm_year + 1900, localtm.tm_mon + 1,
-            localtm.tm_mday, localtm.tm_hour, localtm.tm_min, localtm.tm_sec);
 
     mtdebug1(WM_SYS_LOGTAG, "Starting installed packages inventory.");
 
@@ -539,23 +771,12 @@ void sys_hw_bsd(int queue_fd, const char* LOCATION){
 
     char *string;
     int random_id = os_random();
-    char *timestamp;
-    time_t now;
-    struct tm localtm;
-
-    now = time(NULL);
-    localtime_r(&now, &localtm);
-
-    os_calloc(TIME_LENGTH, sizeof(char), timestamp);
-
-    snprintf(timestamp,TIME_LENGTH-1,"%d/%02d/%02d %02d:%02d:%02d",
-            localtm.tm_year + 1900, localtm.tm_mon + 1,
-            localtm.tm_mday, localtm.tm_hour, localtm.tm_min, localtm.tm_sec);
+    char *timestamp = w_get_timestamp(time(NULL));
 
     if (random_id < 0)
         random_id = -random_id;
 
-    mtdebug1(WM_SYS_LOGTAG, "Starting Hardware inventory");
+    mtdebug1(WM_SYS_LOGTAG, "Starting Hardware inventory.");
 
     cJSON *object = cJSON_CreateObject();
     cJSON *hw_inventory = cJSON_CreateObject();
@@ -576,7 +797,7 @@ void sys_hw_bsd(int queue_fd, const char* LOCATION){
     if (!sysctl(mib, 2, &serial, &len, NULL, 0)){
         cJSON_AddStringToObject(hw_inventory, "board_serial", serial);
     }else{
-        mtdebug1(WM_SYS_LOGTAG, "sysctl failed getting serial number due to (%s)", strerror(errno));
+        mtdebug1(WM_SYS_LOGTAG, "Fail getting serial number due to (%s)", strerror(errno));
     }
 
 #elif defined(__MACH__)
@@ -591,7 +812,7 @@ void sys_hw_bsd(int queue_fd, const char* LOCATION){
     command = "system_profiler SPHardwareDataType | grep Serial";
     if (output = popen(command, "r"), output) {
         if(!fgets(read_buff, SERIAL_LENGTH, output)){
-            mtwarn(WM_SYS_LOGTAG, "Unable to execute command '%s'.", command);
+            mtwarn(WM_SYS_LOGTAG, "Unable to execute command '%s'", command);
         } else {
             char ** parts = NULL;
             parts = OS_StrBreak('\n', read_buff, 2);
@@ -611,7 +832,7 @@ void sys_hw_bsd(int queue_fd, const char* LOCATION){
         }
 
         if (status = pclose(output), status) {
-            mtwarn(WM_SYS_LOGTAG, "Command 'system_profiler' returned %d getting board serial.", status);
+            mtinfo(WM_SYS_LOGTAG, "Command 'system_profiler' returned %d getting board serial.", status);
         }
     } else {
         mtwarn(WM_SYS_LOGTAG, "Couldn't get board serial for hardware inventory.");
@@ -630,20 +851,22 @@ void sys_hw_bsd(int queue_fd, const char* LOCATION){
     /* Get CPU and memory information */
     hw_info *sys_info;
     if (sys_info = get_system_bsd(), sys_info){
-        cJSON_AddStringToObject(hw_inventory, "cpu_name", w_strtrim(sys_info->cpu_name));
+        if(sys_info->cpu_name) {
+            cJSON_AddStringToObject(hw_inventory, "cpu_name", w_strtrim(sys_info->cpu_name));
+        }
         cJSON_AddNumberToObject(hw_inventory, "cpu_cores", sys_info->cpu_cores);
         cJSON_AddNumberToObject(hw_inventory, "cpu_MHz", sys_info->cpu_MHz);
         cJSON_AddNumberToObject(hw_inventory, "ram_total", sys_info->ram_total);
         cJSON_AddNumberToObject(hw_inventory, "ram_free", sys_info->ram_free);
         cJSON_AddNumberToObject(hw_inventory, "ram_usage", sys_info->ram_usage);
 
-        free(sys_info->cpu_name);
+        os_free(sys_info->cpu_name);
         free(sys_info);
     }
 
     /* Send interface data in JSON format */
     string = cJSON_PrintUnformatted(object);
-    mtdebug2(WM_SYS_LOGTAG, "sys_hw_bsd() sending '%s'", string);
+    mtdebug2(WM_SYS_LOGTAG, "Sending '%s'", string);
     SendMSG(queue_fd, string, LOCATION, SYSCOLLECTOR_MQ);
     cJSON_Delete(object);
 
@@ -655,6 +878,7 @@ hw_info *get_system_bsd(){
 
     hw_info *info;
     os_calloc(1, sizeof(hw_info), info);
+    init_hw_info(info);
 
     int mib[2];
     size_t len;
@@ -668,7 +892,7 @@ hw_info *get_system_bsd(){
         info->cpu_name = strdup(cpu_name);
     }else{
         info->cpu_name = strdup("unknown");
-        mtdebug1(WM_SYS_LOGTAG, "sysctl failed getting CPU name due to (%s)", strerror(errno));
+        mtdebug1(WM_SYS_LOGTAG, "Fail getting CPU name due to (%s)", strerror(errno));
     }
 
     /* Number of cores */
@@ -684,7 +908,7 @@ hw_info *get_system_bsd(){
     if (!sysctl(mib, 2, &cpu_MHz, &len, NULL, 0)){
         info->cpu_MHz = (double)cpu_MHz/1000000.0;
     }else{
-        mtdebug1(WM_SYS_LOGTAG, "sysctl failed getting CPU clockrate due to (%s)", strerror(errno));
+        mtdebug1(WM_SYS_LOGTAG, "Failed getting CPU clockrate due to (%s)", strerror(errno));
     }
 
 #elif defined(__FreeBSD__) || defined(__MACH__)
@@ -703,7 +927,7 @@ hw_info *get_system_bsd(){
     if (!sysctlbyname(clockrate, &cpu_MHz, &len, NULL, 0)){
         info->cpu_MHz = (double)cpu_MHz/1000000.0;
     }else{
-        mtdebug1(WM_SYS_LOGTAG, "sysctl failed getting CPU clockrate due to (%s)", strerror(errno));
+        mtdebug1(WM_SYS_LOGTAG, "Fail getting CPU clockrate due to (%s)", strerror(errno));
     }
 
     free(clockrate);
@@ -725,7 +949,7 @@ hw_info *get_system_bsd(){
         uint64_t cpu_ram_kb = cpu_ram / 1024;
         info->ram_total = cpu_ram_kb;
     }else{
-        mtdebug1(WM_SYS_LOGTAG, "sysctl failed getting total RAM due to (%s)", strerror(errno));
+        mtdebug1(WM_SYS_LOGTAG, "Fail getting total RAM due to (%s)", strerror(errno));
     }
 
     /* Free memory RAM and usage */
@@ -747,11 +971,11 @@ hw_info *get_system_bsd(){
                 info->ram_usage = 100 - (info->ram_free * 100 / info->ram_total);
             }
         } else {
-            mtdebug1(WM_SYS_LOGTAG, "sysctl failed getting pages size due to (%s)", strerror(errno));
+            mtdebug1(WM_SYS_LOGTAG, "Fail getting pages size due to (%s)", strerror(errno));
         }
 
     } else {
-        mtdebug1(WM_SYS_LOGTAG, "sysctl failed getting RAM free due to (%s)", strerror(errno));
+        mtdebug1(WM_SYS_LOGTAG, "Fail getting RAM free due to (%s)", strerror(errno));
     }
 
 #elif defined(__MACH__)
@@ -779,10 +1003,10 @@ hw_info *get_system_bsd(){
             }
 
         } else {
-            mtdebug1(WM_SYS_LOGTAG, "sysctl failed getting free pages due to (%s)", strerror(errno));
+            mtdebug1(WM_SYS_LOGTAG, "Fail getting free pages due to (%s)", strerror(errno));
         }
     } else {
-        mtdebug1(WM_SYS_LOGTAG, "sysctl failed getting pages size due to (%s)", strerror(errno));
+        mtdebug1(WM_SYS_LOGTAG, "Fail getting pages size due to (%s)", strerror(errno));
     }
 
 #endif
@@ -793,27 +1017,20 @@ hw_info *get_system_bsd(){
 
 // Get network inventory
 
+#if defined(__MACH__)
+OSHash *gateways;
+#endif
+
 void sys_network_bsd(int queue_fd, const char* LOCATION){
 
     char ** ifaces_list;
     int i = 0, size_ifaces = 0;
     struct ifaddrs *ifaddrs_ptr = NULL, *ifa;
     int random_id = os_random();
-    char *timestamp;
-    time_t now;
-    struct tm localtm;
+    char *timestamp = w_get_timestamp(time(NULL));
 
     // Define time to sleep between messages sent
     int usec = 1000000 / wm_max_eps;
-
-    now = time(NULL);
-    localtime_r(&now, &localtm);
-
-    os_calloc(TIME_LENGTH, sizeof(char), timestamp);
-
-    snprintf(timestamp,TIME_LENGTH,"%d/%02d/%02d %02d:%02d:%02d",
-            localtm.tm_year + 1900, localtm.tm_mon + 1,
-            localtm.tm_mday, localtm.tm_hour, localtm.tm_min, localtm.tm_sec);
 
     if (random_id < 0)
         random_id = -random_id;
@@ -821,23 +1038,32 @@ void sys_network_bsd(int queue_fd, const char* LOCATION){
     mtdebug1(WM_SYS_LOGTAG, "Starting network inventory.");
 
     if (getifaddrs(&ifaddrs_ptr) == -1){
+        mterror(WM_SYS_LOGTAG, "Extracting the interfaces of the system.");
+        free(timestamp);
         if (ifaddrs_ptr) {
             freeifaddrs(ifaddrs_ptr);
         }
-        mterror(WM_SYS_LOGTAG, "getifaddrs() failed.");
         return;
     }
 
     for (ifa = ifaddrs_ptr; ifa; ifa = ifa->ifa_next){
         i++;
     }
+
+    if (i == 0) {
+        mterror(WM_SYS_LOGTAG, "No interface found. Network inventory suspended.");
+        free(timestamp);
+        return;
+    }
+
     os_calloc(i, sizeof(char *), ifaces_list);
 
     /* Create interfaces list */
     size_ifaces = getIfaceslist(ifaces_list, ifaddrs_ptr);
 
     if(!ifaces_list[size_ifaces-1]){
-        mterror(WM_SYS_LOGTAG, "Not found any interface. Network inventory suspended.");
+        mtinfo(WM_SYS_LOGTAG, "Not found any interface. Network inventory suspended.");
+        free(timestamp);
         return;
     }
 
@@ -845,7 +1071,7 @@ void sys_network_bsd(int queue_fd, const char* LOCATION){
     gateways = OSHash_Create();
     OSHash_SetFreeDataPointer(gateways, (void (*)(void *)) freegate);
     if (getGatewayList(gateways) < 0){
-        mtwarn(WM_SYS_LOGTAG, "Unable to obtain the Default Gateway list");
+        mtwarn(WM_SYS_LOGTAG, "Unable to obtain the Default Gateway list.");
     }
 #endif
 
@@ -1340,6 +1566,494 @@ int getGatewayList(OSHash *gateway_list){
     return 0;
 }
 
+char *get_port_state(int state) {
+    char *port_state;
+    os_calloc(STATE_LENGTH, sizeof(char), port_state);
+
+    switch(state){
+        case TSI_S_ESTABLISHED:
+            snprintf(port_state, STATE_LENGTH, "%s", "established");
+            break;
+        case TSI_S_SYN_SENT:
+            snprintf(port_state, STATE_LENGTH, "%s", "syn_sent");
+            break;
+        case TSI_S_SYN_RECEIVED:
+            snprintf(port_state, STATE_LENGTH, "%s", "syn_recv");
+            break;
+        case TSI_S_FIN_WAIT_1:
+            snprintf(port_state, STATE_LENGTH, "%s", "fin_wait1");
+            break;
+        case TSI_S_FIN_WAIT_2:
+            snprintf(port_state, STATE_LENGTH, "%s", "fin_wait2");
+            break;
+        case TSI_S_TIME_WAIT:
+            snprintf(port_state, STATE_LENGTH, "%s", "time_wait");
+            break;
+        case TSI_S_CLOSED:
+            snprintf(port_state, STATE_LENGTH, "%s", "close");
+            break;
+        case TSI_S__CLOSE_WAIT:
+            snprintf(port_state, STATE_LENGTH, "%s", "close_wait");
+            break;
+        case TSI_S_LAST_ACK:
+            snprintf(port_state, STATE_LENGTH, "%s", "last_ack");
+            break;
+        case TSI_S_LISTEN:
+            snprintf(port_state, STATE_LENGTH, "%s", "listening");
+            break;
+        case TSI_S_CLOSING:
+            snprintf(port_state, STATE_LENGTH, "%s", "closing");
+            break;
+        default:
+            snprintf(port_state, STATE_LENGTH, "%s", "unknown");
+            break;
+    }
+    return port_state;
+}
+
+void sys_ports_mac(int queue_fd, const char* WM_SYS_LOCATION, int check_all) {
+
+    time_t now = time(NULL);
+    struct tm localtm;
+    localtime_r(&now, &localtm);
+
+    char *timestamp = w_get_timestamp(time(NULL));
+
+    int random_id = os_random();
+    if (random_id < 0) {
+        random_id = -random_id;
+    }
+
+    // Define time to sleep between messages sent
+    const int usec = 1000000 / wm_max_eps;
+
+    mtdebug1(WM_SYS_LOGTAG, "Starting ports inventory.");
+
+    pid_t * pids = NULL;
+    int32_t maxproc;
+    size_t len = sizeof(maxproc);
+    sysctlbyname("kern.maxproc", &maxproc, &len, NULL, 0);
+
+    os_calloc(maxproc, 1, pids);
+    int count = proc_listallpids(pids, maxproc);
+
+    int index;
+    for(index = 0; index < count; ++index) {
+        pid_t pid = pids[index];
+        // Figure out the size of the buffer needed to hold the list of open FDs
+        int bufferSize = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, 0, 0);
+        if (bufferSize == -1) {
+            mterror(WM_SYS_LOGTAG, "Unable to get open file handles for %d", pid);
+            continue;
+        }
+
+        // Get the list of open FDs
+        struct proc_fdinfo *procFDInfo;
+        os_malloc(bufferSize, procFDInfo);
+        proc_pidinfo(pid, PROC_PIDLISTFDS, 0, procFDInfo, bufferSize);
+        int numberOfProcFDs = bufferSize / PROC_PIDLISTFD_SIZE;
+
+        cJSON* procPorts = cJSON_CreateArray();
+        int i;
+        for(i = 0; i < numberOfProcFDs; i++) {
+            if(procFDInfo[i].proc_fdtype != PROX_FDTYPE_SOCKET) {
+                continue;
+            }
+
+            struct  proc_bsdinfo pbsd;
+            proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &pbsd, PROC_PIDTBSDINFO_SIZE);
+            struct socket_fdinfo socketInfo;
+            int bytesUsed = proc_pidfdinfo(pid, procFDInfo[i].proc_fd, PROC_PIDFDSOCKETINFO, &socketInfo, PROC_PIDFDSOCKETINFO_SIZE);
+
+            if (bytesUsed != PROC_PIDFDSOCKETINFO_SIZE) {
+                continue;
+            }
+
+            if (socketInfo.psi.soi_kind != SOCKINFO_TCP && socketInfo.psi.soi_kind != SOCKINFO_IN) {
+                continue;
+            }
+
+            char laddr[NI_MAXHOST];
+            char faddr[NI_MAXHOST];
+
+            switch(socketInfo.psi.soi_family) {
+                case AF_INET6: {
+                    struct sockaddr_in6 lsin6 = {0};
+                    lsin6.sin6_family = AF_INET6;
+                    lsin6.sin6_addr  = (struct in6_addr)socketInfo.psi.soi_proto.pri_in.insi_laddr.ina_6;
+                    getnameinfo((struct sockaddr *)&lsin6, sizeof(lsin6), laddr, sizeof(laddr), NULL, 0, NI_NUMERICHOST);
+                    lsin6.sin6_addr  = (struct in6_addr)socketInfo.psi.soi_proto.pri_in.insi_faddr.ina_6;
+                    getnameinfo((struct sockaddr *)&lsin6, sizeof(lsin6), faddr, sizeof(faddr), NULL, 0, NI_NUMERICHOST);
+                    break;
+                }
+                case AF_INET: {
+                    struct sockaddr_in lsin = {0};
+                    lsin.sin_family = AF_INET;
+                    lsin.sin_addr = (struct in_addr)socketInfo.psi.soi_proto.pri_in.insi_laddr.ina_46.i46a_addr4;
+                    getnameinfo((struct sockaddr *)&lsin, sizeof(lsin), laddr, sizeof(laddr), NULL, 0, NI_NUMERICHOST);
+                    lsin.sin_addr = (struct in_addr)socketInfo.psi.soi_proto.pri_in.insi_faddr.ina_46.i46a_addr4;
+                    getnameinfo((struct sockaddr *)&lsin, sizeof(lsin), faddr, sizeof(faddr), NULL, 0, NI_NUMERICHOST);
+                    break;
+                }
+                default:
+                    continue;
+            }
+
+            char protocol[5];
+            snprintf(protocol, 5, "%s%c",
+                socketInfo.psi.soi_kind == SOCKINFO_TCP ? "tcp" : "udp",
+                socketInfo.psi.soi_family == AF_INET6 ? '6' : '\0');
+
+
+            int localPort = (int)ntohs(socketInfo.psi.soi_proto.pri_in.insi_lport);
+            int remotePort = (int)ntohs(socketInfo.psi.soi_proto.pri_in.insi_fport);
+
+            cJSON *object = cJSON_CreateObject();
+            cJSON_AddStringToObject(object, "type", "port");
+            cJSON_AddNumberToObject(object, "ID", random_id);
+            cJSON_AddStringToObject(object, "timestamp", timestamp);
+
+            cJSON *port = cJSON_CreateObject();
+            cJSON_AddItemToObject(object, "port", port);
+            cJSON_AddStringToObject(port, "protocol", protocol);
+            cJSON_AddStringToObject(port, "local_ip", laddr);
+            cJSON_AddNumberToObject(port, "local_port", localPort);
+            cJSON_AddStringToObject(port, "remote_ip", faddr);
+            cJSON_AddNumberToObject(port, "remote_port", remotePort);
+            cJSON_AddNumberToObject(port, "PID", pid);
+            cJSON_AddStringToObject(port, "process", pbsd.pbi_name);
+
+            if (!strncmp(protocol, "tcp", 3)) {
+                char *port_state = get_port_state((int)socketInfo.psi.soi_proto.pri_tcp.tcpsi_state);
+                cJSON_AddStringToObject(port, "state", port_state);
+                if (strcmp(port_state, "listening") && !check_all) {
+                    os_free(port_state);
+                    cJSON_Delete(object);
+                    continue;
+                }
+                os_free(port_state);
+            }
+
+            cJSON *prev_port = NULL;
+            int found = 0;
+            cJSON_ArrayForEach(prev_port, procPorts) {
+                if(cJSON_Compare(port, prev_port, 1)) {
+                    found = 1;
+                    break;
+                }
+            }
+
+            if (found) {
+                cJSON_Delete(object);
+                continue;
+            }
+
+            cJSON_AddItemToArray(procPorts, cJSON_Duplicate(port, 1));
+
+            char *string = cJSON_PrintUnformatted(object);
+            mtdebug2(WM_SYS_LOGTAG, "sys_ports_mac() sending '%s'", string);
+            wm_sendmsg(usec, queue_fd, string, WM_SYS_LOCATION, SYSCOLLECTOR_MQ);
+            os_free(string);
+            cJSON_Delete(object);
+        }
+
+        cJSON_Delete(procPorts);
+        os_free(procFDInfo);
+    }
+
+    os_free(pids);
+    cJSON *object = cJSON_CreateObject();
+    cJSON_AddStringToObject(object, "type", "port_end");
+    cJSON_AddNumberToObject(object, "ID", random_id);
+    cJSON_AddStringToObject(object, "timestamp", timestamp);
+    os_free(timestamp);
+
+    char *string = cJSON_PrintUnformatted(object);
+    cJSON_Delete(object);
+    mtdebug2(WM_SYS_LOGTAG, "sys_ports_mac() sending '%s'", string);
+    SendMSG(queue_fd, string, WM_SYS_LOCATION, SYSCOLLECTOR_MQ);
+    os_free(string);
+}
+
+void sys_proc_mac(int queue_fd, const char* LOCATION){
+
+    int random_id = os_random();
+    if(random_id < 0) {
+        random_id = -random_id;
+    }
+
+    // Define time to sleep between messages sent
+    int usec = 1000000 / wm_max_eps;
+
+    time_t now = time(NULL);
+    struct tm localtm;
+    localtime_r(&now, &localtm);
+
+    char *timestamp = w_get_timestamp(time(NULL));
+
+    mtdebug1(WM_SYS_LOGTAG, "Starting running processes inventory.");
+
+
+    int32_t maxproc;
+    size_t len = sizeof(maxproc);
+    sysctlbyname("kern.maxproc", &maxproc, &len, NULL, 0);
+
+    pid_t *pids = NULL;
+    os_calloc(maxproc, 1, pids);
+    int count = proc_listallpids(pids, maxproc);
+
+    mtdebug2(WM_SYS_LOGTAG, "Number of processes retrieved: %d", count);
+
+    cJSON *proc_array = cJSON_CreateArray();
+
+    int index;
+    for(index=0; index < count; ++index) {
+
+        struct proc_taskallinfo task_info;
+        pid_t pid = pids[index] ;
+
+        int st = proc_pidinfo(pid, PROC_PIDTASKALLINFO, 0, &task_info, PROC_PIDTASKALLINFO_SIZE);
+
+        if(st != PROC_PIDTASKALLINFO_SIZE) {
+            mterror(WM_SYS_LOGTAG, "Cannot get process info for PID %d", pid);
+            continue;
+        }
+
+        cJSON *object = cJSON_CreateObject();
+        cJSON_AddStringToObject(object, "type", "process");
+        cJSON_AddNumberToObject(object, "ID", random_id);
+        cJSON_AddStringToObject(object, "timestamp", timestamp);
+
+        cJSON *process = cJSON_CreateObject();
+        cJSON_AddItemToObject(object, "process", process);
+        cJSON_AddNumberToObject(process, "pid", pid);
+
+        /*
+            I : Idle
+            R : Running
+            S : Sleep
+            T : Stopped
+            Z : Zombie
+            E : Internal error getting the status
+        */
+        char *status;
+        switch(task_info.pbsd.pbi_status){
+            case 1:
+                status = "I";
+                break;
+            case 2:
+                status = "R";
+                break;
+            case 3:
+                status = "S";
+                break;
+            case 4:
+                status = "T";
+                break;
+            case 5:
+                status = "Z";
+                break;
+            default:
+                mtdebug1(WM_SYS_LOGTAG, "Error getting the status of the process %d", pid);
+                status = "E";
+        }
+
+        cJSON_AddStringToObject(process, "name", task_info.pbsd.pbi_name);
+        cJSON_AddStringToObject(process, "state", status);
+        cJSON_AddNumberToObject(process, "ppid", task_info.pbsd.pbi_ppid);
+
+        struct passwd *euser = getpwuid((int)task_info.pbsd.pbi_uid);
+        if(euser) {
+            cJSON_AddStringToObject(process, "euser", euser->pw_name);
+        }
+
+        struct passwd *ruser = getpwuid((int)task_info.pbsd.pbi_ruid);
+        if(ruser) {
+            cJSON_AddStringToObject(process, "ruser", ruser->pw_name);
+        }
+
+        struct group *rgroup = getgrgid((int)task_info.pbsd.pbi_rgid);
+        if(rgroup) {
+            cJSON_AddStringToObject(process, "rgroup", rgroup->gr_name);
+        }
+
+        cJSON_AddNumberToObject(process, "priority", task_info.ptinfo.pti_priority);
+        cJSON_AddNumberToObject(process, "nice", task_info.pbsd.pbi_nice);
+        cJSON_AddNumberToObject(process, "vm_size", task_info.ptinfo.pti_virtual_size / 1024);
+
+        cJSON_AddItemToArray(proc_array, object);
+    }
+
+    os_free(pids);
+
+    cJSON *item;
+    cJSON_ArrayForEach(item, proc_array) {
+        char *string = cJSON_PrintUnformatted(item);
+        mtdebug2(WM_SYS_LOGTAG, "sys_proc_mac() sending '%s'", string);
+        wm_sendmsg(usec, queue_fd, string, LOCATION, SYSCOLLECTOR_MQ);
+        os_free(string);
+    }
+
+    cJSON_Delete(proc_array);
+    cJSON *object = cJSON_CreateObject();
+    cJSON_AddStringToObject(object, "type", "process_end");
+    cJSON_AddNumberToObject(object, "ID", random_id);
+    cJSON_AddStringToObject(object, "timestamp", timestamp);
+    os_free(timestamp);
+
+    char *end_msg = cJSON_PrintUnformatted(object);
+    mtdebug2(WM_SYS_LOGTAG, "sys_proc_mac() sending '%s'", end_msg);
+    wm_sendmsg(usec, queue_fd, end_msg, LOCATION, SYSCOLLECTOR_MQ);
+    cJSON_Delete(object);
+    os_free(end_msg);
+}
+
+/* This function normalize the macOS package's name */
+int normalize_mac_package_name(const char * source_package, char ** vendor_name, char ** package_name) {
+    int result = 1;
+    int i;
+    char * next = NULL;
+    char * package_cpy = NULL;
+    char * package = NULL;
+    char * vendor_in_package[] = {
+        "Microsoft",
+        "VMware",
+        "Symantec",
+        "McAfee",
+        "QuickHeal",
+        "Quick",
+    };
+    char * version_in_package[] = {
+        "1Password"
+    };
+    int array_size_vendor = array_size(vendor_in_package);
+    int array_size_version = array_size(version_in_package);
+
+    if (!source_package) {
+        return 0;
+    }
+    w_strdup(source_package, package_cpy);
+
+    if (strstr(package_cpy, "For Mac") && strstr(package_cpy, "Kaspersky")) {
+        package = package_cpy;
+        package = w_remove_substr(package, " For Mac");
+        w_strdup(package, *package_name);
+        os_free(package_cpy);
+        return 1;
+    }
+
+    if (next = wstr_chr(package_cpy, ' '), !next) {
+        package = package_cpy;
+        if (!strcmp(package, "zoom.us")) {
+            w_strdup("zoom", *package_name);
+        } else if (strstr(package, "TotalDefense")) {
+            w_strdup("TotalDefense", *vendor_name);
+            package = w_remove_substr(package, "TotalDefense");
+            package = w_remove_substr(package, "forMac");
+            if (!strcmp(package, "Antivirus")) {
+                w_strdup("Anti-Virus", *package_name);
+            } else {
+                w_strdup(package, *package_name);
+            }
+        } else if (strstr(package, "AVG")) {
+            w_strdup("AVG", *vendor_name);
+            package = w_remove_substr(package, "AVG");
+            if (!strcmp(package, "Antivirus")) {
+                w_strdup("Anti-Virus", *package_name);
+            } else {
+                w_strdup(package, *package_name);
+            }
+        } else if (!strcmp(package, "AntivirusforMac")) {
+            package = w_remove_substr(package, "forMac");
+            w_strdup(package, *package_name);
+        } else {
+            result = 0;
+        }
+    } else {
+        *next++ = '\0';
+        for (i = 0; i < array_size_vendor; i++) {
+            if (!strcmp(package_cpy, vendor_in_package[i])) {
+                if (!strcmp(package_cpy, "Quick")) {
+                    package = next;
+                    next = wstr_chr(package, ' ');
+                    *next++ = '\0';
+                    w_strdup("Quick Heal", *vendor_name);
+                    w_strdup(next, *package_name);
+                } else {
+                    if (!strcmp(package_cpy, "McAfee")) {
+                        next = w_remove_substr(next, " for Mac");
+                    }
+                    w_strdup(package_cpy, *vendor_name);
+                    w_strdup(next, *package_name);
+                }
+                os_free(package_cpy);
+                return 1;
+            }
+        }
+        for (i = 0; i < array_size_version; i++) {
+            if (!strcmp(package_cpy, version_in_package[i])) {
+                w_strdup(package_cpy, *package_name);
+                os_free(package_cpy);
+                return 1;
+            }
+        }
+        result = 0;
+    }
+
+    os_free(package_cpy);
+    return result;
+}
+
+char * get_vendor_mac(const char * string) {
+    char * vendor = NULL;
+    char* token = NULL;
+    char * string_cpy = NULL;
+    char * vendors[] = {
+        "google",
+        "apple",
+        "microsoft",
+        "adobe",
+        "atlassian",
+        "oracle",
+        "sophos",
+        "symantec",
+        "kaspersky",
+        "mcafee",
+        "bitdefender",
+        "k7computing",
+        "avg",
+        "avast",
+        "simplexsolutionsinc",
+        "liquid",
+        "foxit-software"
+    };
+    char * save_ptr = NULL;
+    int size_vendors = array_size(vendors);
+    int i;
+
+    if (!string) {
+        return NULL;
+    }
+
+    os_strdup(string, string_cpy);
+    token = strtok_r(string_cpy, ".", &save_ptr);
+    while (token != NULL && vendor == NULL) {
+        for (i = 0; i < size_vendors; i++) {
+            if (!strcmp(token, vendors[i])) {
+                if (!strcmp(token, "foxit-software")) {
+                    w_remove_substr(token, "-");
+                }
+                token[0] = toupper(token[0]);
+                os_strdup(token, vendor);
+                break;
+            }
+        }
+        token = strtok_r(NULL, ".", &save_ptr);
+    }
+
+    os_free(string_cpy);
+    return vendor;
+}
 
 #endif
 

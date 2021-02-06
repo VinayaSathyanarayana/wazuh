@@ -1,9 +1,9 @@
 /*
  * Wazuh Module Manager
- * Copyright (C) 2015-2019, Wazuh Inc.
+ * Copyright (C) 2015-2020, Wazuh Inc.
  * April 22, 2016.
  *
- * This program is a free software; you can redistribute it
+ * This program is free software; you can redistribute it
  * and/or modify it under the terms of the GNU General Public
  * License (version 2) as published by the FSF - Free Software
  * Foundation.
@@ -37,7 +37,10 @@
 #define AZ_WM_NAME "azure-logs"
 #define KEY_WM_NAME "agent-key-polling"
 #define SCA_WM_NAME "sca"
+#define GCP_WM_NAME "gcp-pubsub"
 #define FLUENT_WM_NAME "fluent-forward"
+#define AGENT_UPGRADE_WM_NAME "agent-upgrade"
+#define TASK_MANAGER_WM_NAME "task-manager"
 
 #define WM_DEF_TIMEOUT      1800            // Default runtime limit (30 minutes)
 #define WM_DEF_INTERVAL     86400           // Default cycle interval (1 day)
@@ -83,7 +86,7 @@ typedef enum crypto_type {
 #include "wm_command.h"
 #include "wm_ciscat.h"
 #include "wm_aws.h"
-#include "wm_vuln_detector.h"
+#include "vulnerability_detector/wm_vuln_detector.h"
 #include "wm_osquery_monitor.h"
 #include "wm_download.h"
 #include "wm_azure.h"
@@ -92,12 +95,17 @@ typedef enum crypto_type {
 #include "wm_sca.h"
 #include "wm_fluent.h"
 #include "wm_control.h"
+#include "wm_gcp.h"
+#include "wm_task_general.h"
+#include "agent_upgrade/wm_agent_upgrade.h"
+#include "task_manager/wm_task_manager.h"
 
 extern wmodule *wmodules;       // Loaded modules.
 extern int wm_task_nice;        // Nice value for tasks.
 extern int wm_max_eps;          // Maximum events per second sent by OpenScap Wazuh Module
 extern int wm_kill_timeout;     // Time for a process to quit before killing it
 extern int wm_debug_level;
+
 
 // Read XML configuration and internal options
 int wm_config();
@@ -150,9 +158,6 @@ void wm_kill_children();
 // Reads an HTTP header and extracts the size of the response
 long int wm_read_http_size(char *header);
 
-// Tokenize string separated by spaces, respecting double-quotes
-char** wm_strtok(char *string);
-
 /* Load or save the running state
  * op: WM_IO_READ | WM_IO_WRITE
  * Returns 0 if success, or 1 if fail.
@@ -168,15 +173,6 @@ int wm_sendmsg(int usec, int queue, const char *message, const char *locmsg, cha
 // Check if a path is relative or absolute.
 // Returns 0 if absolute, 1 if relative or -1 on error.
 int wm_relative_path(const char * path);
-
-// Get time in seconds to the specified hour in hh:mm
-int get_time_to_hour(const char * hour);
-
-// Get time to reach a particular day of the week and hour
-int get_time_to_day(int wday, const char * hour);
-
-// Function to look for the correct day of the month to run a wodle
-int check_day_to_scan(int day, const char *hour);
 
 // Get binary full path
 int wm_get_path(const char *binary, char **validated_comm);
@@ -196,9 +192,6 @@ void * wmcom_main(void * arg);
 #endif
 size_t wmcom_dispatch(char * command, char ** output);
 size_t wmcom_getconfig(const char * section, char ** output);
-
-// Sleep function for Windows and Unix (milliseconds)
-void wm_delay(unsigned int ms);
 
 #ifdef __MACH__
 void freegate(gateway *gate);

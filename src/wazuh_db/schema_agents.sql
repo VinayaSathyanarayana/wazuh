@@ -1,16 +1,20 @@
 /*
  * SQL Schema for global database
- * Copyright (C) 2015-2019, Wazuh Inc.
+ * Copyright (C) 2015-2020, Wazuh Inc.
  * June 30, 2016.
  * This program is a free software, you can redistribute it
  * and/or modify it under the terms of GPLv2.
  */
 
 CREATE TABLE IF NOT EXISTS fim_entry (
-    file TEXT PRIMARY KEY,
-    type TEXT NOT NULL CHECK (type IN ('file', 'registry')),
+    full_path TEXT NOT NULL PRIMARY KEY,
+    file TEXT,
+    type TEXT NOT NULL CHECK (type IN ('file', 'registry_key', 'registry_value')),
     date INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
     changes INTEGER NOT NULL DEFAULT 1,
+    arch TEXT CHECK (arch IN (NULL, '[x64]', '[x32]')),
+    value_name TEXT,
+    value_type TEXT,
     size INTEGER,
     perm TEXT,
     uid TEXT,
@@ -22,14 +26,19 @@ CREATE TABLE IF NOT EXISTS fim_entry (
     mtime INTEGER,
     inode INTEGER,
     sha256 TEXT,
-    attributes INTEGER DEFAULT 0,
-    symbolic_path TEXT
+    attributes TEXT,
+    symbolic_path TEXT,
+    checksum TEXT
 );
+
+CREATE INDEX IF NOT EXISTS fim_full_path_index ON fim_entry (full_path);
+CREATE INDEX IF NOT EXISTS fim_file_index ON fim_entry (file);
+CREATE INDEX IF NOT EXISTS fim_date_index ON fim_entry (date);
 
 CREATE TABLE IF NOT EXISTS pm_event (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    date_first TEXT,
-    date_last TEXT,
+    date_first INTEGER,
+    date_last INTEGER,
     log TEXT,
     pci_dss TEXT,
     cis TEXT
@@ -94,11 +103,13 @@ CREATE TABLE IF NOT EXISTS sys_osinfo (
     os_codename TEXT,
     os_major TEXT,
     os_minor TEXT,
+    os_patch TEXT,
     os_build TEXT,
     os_platform TEXT,
     sysname TEXT,
     release TEXT,
     version TEXT,
+    os_release TEXT,
     PRIMARY KEY (scan_id, os_name)
 );
 
@@ -150,10 +161,21 @@ CREATE TABLE IF NOT EXISTS sys_programs (
     description TEXT,
     location TEXT,
     triaged INTEGER(1),
+    cpe TEXT,
+    msu_name TEXT,
     PRIMARY KEY (scan_id, name, version, architecture)
 );
 
 CREATE INDEX IF NOT EXISTS programs_id ON sys_programs (scan_id);
+
+CREATE TABLE IF NOT EXISTS sys_hotfixes (
+    scan_id INTEGER,
+    scan_time TEXT,
+    hotfix TEXT,
+    PRIMARY KEY (scan_id, scan_time, hotfix)
+);
+
+CREATE INDEX IF NOT EXISTS hotfix_id ON sys_hotfixes (scan_id);
 
 CREATE TABLE IF NOT EXISTS sys_processes (
     scan_id INTEGER,
@@ -214,13 +236,13 @@ CREATE TABLE IF NOT EXISTS metadata (
 
 CREATE TABLE IF NOT EXISTS scan_info (
     module TEXT PRIMARY KEY,
-    first_start INTEGER,
-    first_end INTEGER,
-    start_scan INTEGER,
-    end_scan INTEGER,
-    fim_first_check INTEGER,
-    fim_second_check INTEGER,
-    fim_third_check INTEGER
+    first_start INTEGER DEFAULT 0,
+    first_end INTEGER DEFAULT 0,
+    start_scan INTEGER DEFAULT 0,
+    end_scan INTEGER DEFAULT 0,
+    fim_first_check INTEGER DEFAULT 0,
+    fim_second_check INTEGER DEFAULT 0,
+    fim_third_check INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS sca_policy (
@@ -261,7 +283,8 @@ CREATE TABLE IF NOT EXISTS sca_check (
    `references` TEXT,
    result TEXT,
    `status` TEXT,
-   reason TEXT
+   reason TEXT,
+   condition TEXT
 );
 
 CREATE INDEX IF NOT EXISTS policy_id_index ON sca_check (policy_id);
@@ -284,4 +307,29 @@ CREATE TABLE IF NOT EXISTS sca_check_compliance (
 
 CREATE INDEX IF NOT EXISTS comp_id_check_index ON sca_check_compliance (id_check);
 
-PRAGMA journal_mode=WAL;
+CREATE TABLE IF NOT EXISTS vuln_metadata (
+    LAST_SCAN INTEGER,
+    WAZUH_VERSION TEXT,
+    HOTFIX_SCAN_ID TEXT
+);
+INSERT INTO vuln_metadata (LAST_SCAN, WAZUH_VERSION, WAZUH_VERSION)
+    SELECT '0', '0', '0' WHERE NOT EXISTS (
+        SELECT * FROM vuln_metadata
+    );
+
+CREATE TABLE IF NOT EXISTS sync_info (
+    component TEXT PRIMARY KEY,
+    last_attempt INTEGER DEFAULT 0,
+    last_completion INTEGER DEFAULT 0,
+    n_attempts INTEGER DEFAULT 0,
+    n_completions INTEGER DEFAULT 0
+);
+
+BEGIN;
+
+INSERT INTO metadata (key, value) VALUES ('db_version', '6');
+INSERT INTO scan_info (module) VALUES ('fim');
+INSERT INTO scan_info (module) VALUES ('syscollector');
+INSERT INTO sync_info (component) VALUES ('fim');
+
+COMMIT;

@@ -1,10 +1,10 @@
 /* Agent state management functions
  * August 2, 2017
  *
- * Copyright (C) 2015-2019, Wazuh Inc.
+ * Copyright (C) 2015-2020, Wazuh Inc.
  * All right reserved.
  *
- * This program is a free software; you can redistribute it
+ * This program is free software; you can redistribute it
  * and/or modify it under the terms of the GNU General Public
  * License (version 2) as published by the FSF - Free Software
  * Foundation
@@ -21,7 +21,7 @@ static int write_state();
 int interval;
 
 void * state_main(__attribute__((unused)) void * args) {
-    pthread_mutex_init(&state_mutex, NULL);
+    w_mutex_init(&state_mutex, NULL);
     interval = getDefine_Int("agent", "state_interval", 0, 86400);
 
     if (!interval) {
@@ -53,7 +53,7 @@ void update_ack(time_t curr_time) {
 
 int write_state() {
     FILE * fp;
-    struct tm tm;
+    struct tm tm = { .tm_sec = 0 };
     const char * status;
     char path[PATH_MAX - 8];
     char last_keepalive[1024] = "";
@@ -116,7 +116,7 @@ int write_state() {
         "# State file for %s\n"
         "\n"
         "# Agent status:\n"
-        "# - pending:      waiting for get connected.\n"
+        "# - pending:      waiting to get connected.\n"
         "# - connected:    connection established with manager in the last %d seconds.\n"
         "# - disconnected: connection lost or no ACK received in the last %d seconds.\n"
         "status='%s'\n"
@@ -132,7 +132,7 @@ int write_state() {
         "\n"
         "# Number of messages (events + control messages) sent to the manager\n"
         "msg_sent='%u'\n"
-        , __local_name, agt->notify_time, agt->notify_time, status, last_keepalive, last_ack, agent_state.msg_count, agent_state.msg_sent);
+        , __local_name, agt->notify_time, agt->max_time_reconnect_try, status, last_keepalive, last_ack, agent_state.msg_count, agent_state.msg_sent);
 
     fclose(fp);
 

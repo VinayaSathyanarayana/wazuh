@@ -1,18 +1,19 @@
-/* Copyright (C) 2015-2019, Wazuh Inc.
+/* Copyright (C) 2015-2020, Wazuh Inc.
  * Copyright (C) 2009 Trend Micro Inc.
  * All right reserved.
  *
- * This program is a free software; you can redistribute it
+ * This program is free software; you can redistribute it
  * and/or modify it under the terms of the GNU General Public
  * License (version 2) as published by the FSF - Free Software
  * Foundation
  */
 
-#ifndef __SEC_H
-#define __SEC_H
+#ifndef SEC_H
+#define SEC_H
 
 #include <time.h>
 #include <pthread.h>
+#include "shared.h"
 
 typedef enum _crypt_method{
     W_METH_BLOWFISH,W_METH_AES
@@ -29,6 +30,7 @@ typedef struct _keyentry {
     unsigned int local;
     unsigned int keyid;
     unsigned int global;
+    time_t updating_time;
 
     char *id;
     char *key;
@@ -42,6 +44,8 @@ typedef struct _keyentry {
     struct sockaddr_in peer_info;
     FILE *fp;
     crypt_method crypto_method;
+
+    w_linked_queue_node_t *rids_node;
 } keyentry;
 
 /* Key storage */
@@ -69,6 +73,8 @@ typedef struct _keystore {
     /* Removed keys storage */
     char **removed_keys;
     size_t removed_keys_size;
+
+    w_linked_queue_t *opened_fp_queue;
 } keystore;
 
 typedef enum key_states {
@@ -78,7 +84,7 @@ typedef enum key_states {
     KS_ENCKEY
 } key_states;
 
-#define KEYSTORE_INITIALIZER { NULL, NULL, NULL, NULL, 0, 0, 0, 0, { 0, 0 }, NULL, 0 }
+#define KEYSTORE_INITIALIZER { NULL, NULL, NULL, NULL, 0, 0, 0, 0, { 0, 0 }, NULL, 0, NULL }
 
 /** Function prototypes -- key management **/
 
@@ -86,7 +92,7 @@ typedef enum key_states {
 int OS_CheckKeys(void);
 
 /* Read the keys */
-void OS_ReadKeys(keystore *keys, int rehash_keys, int save_removed, int no_limit) __attribute((nonnull));
+void OS_ReadKeys(keystore *keys, int rehash_keys, int save_removed) __attribute((nonnull));
 
 void OS_FreeKey(keyentry *key);
 
@@ -152,14 +158,16 @@ int OS_AddSocket(keystore * keys, unsigned int i, int sock);
 // Delete socket number from keystore
 int OS_DeleteSocket(keystore * keys, int sock);
 
-/* Set the agent crypto method readed from the ossec.conf file */
+/* Set the agent crypto method read from the ossec.conf file */
 void os_set_agent_crypto_method(keystore * keys,const int method);
 
 /** Remote IDs directories and internal definitions */
 #ifndef WIN32
 #define RIDS_DIR        "/queue/rids"
+#define RIDS_DIR_PATH   DEFAULTDIR RIDS_DIR
 #else
 #define RIDS_DIR        "rids"
+#define RIDS_DIR_PATH   RIDS_DIR
 #endif
 
 #define SENDER_COUNTER  "sender_counter"
@@ -169,4 +177,4 @@ extern unsigned int _s_comp_print;
 extern unsigned int _s_recv_flush;
 extern int _s_verify_counter;
 
-#endif /* __SEC_H */
+#endif /* SEC_H */

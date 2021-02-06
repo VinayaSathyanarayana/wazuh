@@ -1,5 +1,5 @@
 WAZUH
-Copyright (C) 2015-2019, Wazuh Inc.
+Copyright (C) 2015-2020, Wazuh Inc.
 
 Based on OSSEC HIDS 0.8
 Copyright (c) 2004-2006 Daniel B. Cid  	<daniel.cid@gmail.com>
@@ -31,7 +31,7 @@ Kroki szybkiego sposobu:
    zostanie utworzony, można postępując zgodnie z instrukcjami
    z install.sh spowodować uruchamianie OSSEC HIDS podczas
    startu systemu. Aby wystartować ręcznie wystarczy uruchomić
-   /var/ossec/bin/ossec-control start
+   /var/ossec/bin/wazuh-control start
 
 3- Jeśli zamierzasz używać kilku klientów, powinieneś najpierw
    zainstalowac serwer. Do stworzenia odpowiednich kluczy użyj
